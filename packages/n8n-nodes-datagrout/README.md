@@ -28,7 +28,7 @@ Create a **DataGrout API** credential:
 |-------|-------------|
 | **API Token** | Generate it in your DataGrout dashboard. |
 | **Server ID** | Your server's UUID (from `gateway.datagrout.ai/servers/{uuid}`). |
-| **Gateway Base URL** | Defaults to `https://gateway.datagrout.ai`; use the staging host for testing. |
+| **Gateway Base URL** | Defaults to `https://gateway.datagrout.ai`. |
 
 The credential test runs a minimal MCP `initialize` round-trip against your server.
 

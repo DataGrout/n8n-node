@@ -38,7 +38,7 @@ export class DataGroutApi implements ICredentialType {
 			name: 'baseUrl',
 			type: 'string',
 			default: 'https://gateway.datagrout.ai',
-			description: 'Base URL of the DataGrout gateway (use the staging host for testing)',
+			description: 'Base URL of the DataGrout gateway',
 		},
 	];
 
