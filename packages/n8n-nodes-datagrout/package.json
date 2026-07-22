@@ -1,0 +1,53 @@
+{
+    "name": "@datagrout/n8n-nodes-datagrout",
+    "version": "0.1.0",
+    "description": "n8n community node to connect AI Agents and workflows to DataGrout MCP servers",
+    "license": "MIT",
+    "homepage": "https://github.com/DataGrout/n8n-node",
+    "keywords": [
+        "n8n-community-node-package",
+        "datagrout",
+        "mcp",
+        "model-context-protocol"
+    ],
+    "author": {
+        "name": "DataGrout",
+        "email": "support@datagrout.ai"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/DataGrout/n8n-node.git"
+    },
+    "scripts": {
+        "build": "n8n-node build",
+        "build:watch": "tsc --watch",
+        "dev": "n8n-node dev",
+        "lint": "n8n-node lint",
+        "lint:fix": "n8n-node lint --fix",
+        "release": "n8n-node release",
+        "prepublishOnly": "n8n-node prerelease"
+    },
+    "files": [
+        "dist"
+    ],
+    "n8n": {
+        "n8nNodesApiVersion": 1,
+        "strict": true,
+        "credentials": [
+            "dist/credentials/DataGroutApi.credentials.js"
+        ],
+        "nodes": [
+            "dist/nodes/DataGrout/DataGrout.node.js"
+        ]
+    },
+    "devDependencies": {
+        "@n8n/node-cli": "*",
+        "eslint": "9.32.0",
+        "prettier": "3.6.2",
+        "release-it": "^19.0.4",
+        "typescript": "5.9.2"
+    },
+    "peerDependencies": {
+        "n8n-workflow": "*"
+    }
+}

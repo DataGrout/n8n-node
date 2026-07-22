@@ -1,0 +1,50 @@
+{
+    "name": "@datagrout/n8n-nodes-datagrout-mcp",
+    "version": "0.1.0",
+    "description": "DataGrout MCP tool sub-node for n8n AI Agents — exposes every server tool as a separate agent tool (self-hosted)",
+    "license": "MIT",
+    "homepage": "https://github.com/DataGrout/n8n-node",
+    "keywords": [
+        "n8n-community-node-package",
+        "datagrout",
+        "mcp",
+        "model-context-protocol"
+    ],
+    "author": {
+        "name": "DataGrout",
+        "email": "support@datagrout.ai"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/DataGrout/n8n-node.git"
+    },
+    "scripts": {
+        "build": "tsc && cp nodes/DataGroutMcp/*.svg dist/nodes/DataGroutMcp/ && cp -r icons dist/"
+    },
+    "files": [
+        "dist"
+    ],
+    "n8n": {
+        "n8nNodesApiVersion": 1,
+        "strict": false,
+        "credentials": [
+            "dist/credentials/DataGroutApi.credentials.js"
+        ],
+        "nodes": [
+            "dist/nodes/DataGroutMcp/DataGroutMcpTool.node.js"
+        ]
+    },
+    "devDependencies": {
+        "@types/node": "^26.1.1",
+        "n8n-workflow": "*",
+        "typescript": "5.9.2"
+    },
+    "peerDependencies": {
+        "n8n-workflow": "*"
+    },
+    "dependencies": {
+        "@langchain/core": "1.2.0",
+        "@n8n/json-schema-to-zod": "^1.12.0",
+        "zod": "3.25.67"
+    }
+}

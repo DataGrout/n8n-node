@@ -1,0 +1,10 @@
+{
+	"node": "@datagrout/n8n-nodes-datagrout.dataGrout",
+	"nodeVersion": "1.0",
+	"codexVersion": "1.0",
+	"categories": ["AI", "Development"],
+	"resources": {
+		"credentialDocumentation": [{ "url": "https://library.datagrout.ai/authentication" }],
+		"primaryDocumentation": [{ "url": "https://library.datagrout.ai/" }]
+	}
+}
