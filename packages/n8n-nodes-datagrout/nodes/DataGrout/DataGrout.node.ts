@@ -229,17 +229,31 @@ async function collectDetached(
 		await sleep(1000); // tasks.wait long-polls server-side; brief gap between attempts
 	}
 
-	return undefined; // budget exhausted — caller returns the detach stub (honest)
+	// Budget exhausted: return a clean, actionable result instead of the raw
+	// detach stub (whose server hint tells the caller to invoke tasks.wait —
+	// advice a workflow or filtered agent may not be able to follow).
+	const note =
+		`The operation is still running in the background (task ${ref}). ` +
+		'Increase "Wait for Background Tasks (Ms)" on this node to allow more time, ' +
+		'or re-run shortly — finished work is reused.';
+	return {
+		content: [{ type: 'text', text: note }],
+		structuredContent: { status: 'running', task_ref: ref, note },
+	};
 }
 
 // discovery.plan / discovery.perform accept lean/head response-shaping
 // params that protect the caller's context window from oversized payloads.
 // Injected only for those tools and only when the caller didn't set them.
 function injectLeanDefaults(toolName: string, args: IDataObject): IDataObject {
-	if (/^data-grout@\d+\/discovery\.(plan|guide)@/.test(toolName)) {
+	// Servers may list tools under their canonical name
+	// (data-grout@1/discovery.plan@1) or a sanitized form (discovery_plan) —
+	// match both (live-observed 2026-07-24: the tools/list of an
+	// intelligent-interface server returns sanitized names).
+	if (/(^|\/)discovery[._](plan|guide)(@\d+)?$/.test(toolName)) {
 		return { lean: true, head: true, ...args };
 	}
-	if (/^data-grout@\d+\/discovery\.perform@/.test(toolName)) {
+	if (/(^|\/)discovery[._]perform(@\d+)?$/.test(toolName)) {
 		return { head: true, ...args };
 	}
 	return args;

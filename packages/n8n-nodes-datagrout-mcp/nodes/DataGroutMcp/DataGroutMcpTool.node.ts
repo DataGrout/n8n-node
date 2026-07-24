@@ -211,7 +211,16 @@ async function collectDetached(
 		await sleep(1000);
 	}
 
-	return undefined;
+	// Budget exhausted: hand the agent a clean, actionable message instead of
+	// the raw detach stub (whose server hint may reference tools the agent
+	// cannot call on a filtered server).
+	const note =
+		'The operation needs more time and is still running in the background. ' +
+		'Ask again in a moment — the finished work is reused, so the retry is fast.';
+	return {
+		content: [{ type: 'text', text: note }],
+		structuredContent: { status: 'running', task_ref: ref, note },
+	};
 }
 
 // discovery.plan / discovery.perform accept lean/head response-shaping
@@ -219,10 +228,14 @@ async function collectDetached(
 // (preview + server-side cache_ref instead of every row). Injected only
 // for those tools and only when the agent didn't set them itself.
 function injectLeanDefaults(toolName: string, args: IDataObject): IDataObject {
-	if (/^data-grout@\d+\/discovery\.(plan|guide)@/.test(toolName)) {
+	// Servers may list tools under their canonical name
+	// (data-grout@1/discovery.plan@1) or a sanitized form (discovery_plan) —
+	// match both (live-observed 2026-07-24: the tools/list of an
+	// intelligent-interface server returns sanitized names).
+	if (/(^|\/)discovery[._](plan|guide)(@\d+)?$/.test(toolName)) {
 		return { lean: true, head: true, ...args };
 	}
-	if (/^data-grout@\d+\/discovery\.perform@/.test(toolName)) {
+	if (/(^|\/)discovery[._]perform(@\d+)?$/.test(toolName)) {
 		return { head: true, ...args };
 	}
 	return args;
