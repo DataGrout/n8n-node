@@ -1,7 +1,7 @@
 {
     "name": "@datagrout/n8n-nodes-datagrout-mcp",
     "version": "0.1.0",
-    "description": "DataGrout MCP tool sub-node for n8n AI Agents — exposes every server tool as a separate agent tool (self-hosted)",
+    "description": "DataGrout MCP tool sub-node for n8n AI Agents \u2014 exposes every server tool as a separate agent tool (self-hosted)",
     "license": "MIT",
     "homepage": "https://github.com/DataGrout/n8n-node",
     "keywords": [
@@ -36,11 +36,11 @@
     },
     "devDependencies": {
         "@types/node": "^26.1.1",
-        "n8n-workflow": "*",
+        "n8n-workflow": "^2.28.3",
         "typescript": "5.9.2"
     },
     "peerDependencies": {
-        "n8n-workflow": "*"
+        "n8n-workflow": "^2.28.3"
     },
     "dependencies": {
         "@langchain/core": "1.2.0",

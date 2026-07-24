@@ -19,9 +19,6 @@ jobs:
         package:
           - n8n-nodes-datagrout
           - n8n-nodes-datagrout-mcp
-    defaults:
-      run:
-        working-directory: packages/${{ matrix.package }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,12 +26,16 @@ jobs:
         with:
           node-version: 22
 
+      # Root workspace install; the single root lockfile is canonical.
+      # --ignore-scripts skips isolated-vm's native build (a transitive dep of
+      # n8n's expression runtime) — it is only needed at n8n runtime, never for
+      # building or linting these packages.
       - name: Install
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build
-        run: npm run build
+        run: npm run build --workspace=packages/${{ matrix.package }}
 
       - name: Lint (strict, verified package only)
         if: matrix.package == 'n8n-nodes-datagrout'
-        run: npm run lint
+        run: npm run lint --workspace=packages/${{ matrix.package }}
