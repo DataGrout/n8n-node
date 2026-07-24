@@ -25,14 +25,13 @@ Zero-config alternative: n8n's built-in **MCP Client Tool** pointed at
 `https://gateway.datagrout.ai/servers/{uuid}/mcp` also works. What these packages
 add beyond branding and the credential:
 
-- **Transparent background tasks** — long DataGrout calls detach server-side;
-  the nodes collect the finished result via `tasks.wait` automatically, so
+- **Background tasks handled for you** — when a slow request moves to a
+  background task server-side, the node waits and returns the finished result;
   workflows and agents never deal with task references or polling.
-- **Lean responses by default** — `discovery.*` calls request preview-shaped
-  results (`lean`/`head`), so a 10,000-row result arrives as a 5-row preview
-  plus a server-side `cache_ref` instead of flooding the agent's context.
-- **Session reuse** — one MCP session per credential (with automatic refresh),
-  instead of a new initialize handshake on every call.
+- **Lean responses by default** — a 10,000-row result arrives as a short
+  preview plus a server-side reference for DataGrout's compute tools, instead
+  of flooding the agent's context.
+- **Faster calls** — the server connection is reused between calls.
 - **Tool permission filter** — All / Selected / All Except, enforced on both
   listing and execution.
 

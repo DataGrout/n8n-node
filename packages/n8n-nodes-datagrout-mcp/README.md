@@ -10,6 +10,17 @@ credential and a **Tools to Include** filter.
 > verification. For a verified, zero-dependency node, see
 > `@datagrout/n8n-nodes-datagrout`.
 
+## What the node handles for you
+
+- **Background tasks**: slow DataGrout requests are moved to a background task
+  server-side; the node waits and returns the finished result — the agent just
+  receives the answer.
+- **Lean responses** (on by default): large result sets return as a short
+  preview plus a server-side reference that DataGrout's compute tools accept,
+  keeping huge row sets out of your workflow and agent context.
+- **Connection reuse**: calls share one server session instead of
+  re-connecting every time.
+
 ## Installation (self-hosted)
 
 1. Install `@datagrout/n8n-nodes-datagrout-mcp` from **Settings → Community Nodes**.
