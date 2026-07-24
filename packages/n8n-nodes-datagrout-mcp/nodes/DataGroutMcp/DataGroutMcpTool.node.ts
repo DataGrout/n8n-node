@@ -189,10 +189,20 @@ async function collectDetached(
 		);
 
 		const sc = (result.structuredContent as IDataObject) ?? {};
-		const task = (sc.result as IDataObject) ?? {};
+		// Direct tools/call returns the task record at the TOP of structuredContent
+		// (live-verified 2026-07-23); the discovery.perform wrapper nests it under
+		// .result. Support both.
+		const task =
+			typeof sc.completed !== 'undefined' || sc.task_ref
+				? sc
+				: ((sc.result as IDataObject) ?? {});
 
 		if (task.completed === true && typeof task.result === 'object' && task.result !== null) {
-			return task.result as IDataObject;
+			const payload = task.result as IDataObject;
+			return {
+				content: [{ type: 'text', text: JSON.stringify(payload) }],
+				structuredContent: payload,
+			};
 		}
 		if (task.status === 'failed' || (task.error && task.completed === true)) {
 			return result;
