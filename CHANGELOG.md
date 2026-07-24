@@ -1,3 +1,22 @@
+## Unreleased
+
+- **Transparent background-task collection**: calls that detach (`status: "detached"`)
+  are collected via `tasks.wait` automatically; new `Wait for Background Tasks (Ms)`
+  option (default 120000, 0 disables) on the DataGrout node.
+- **Lean response defaults**: `discovery.plan`/`discovery.guide` get `lean`+`head`,
+  `discovery.perform` gets `head`, unless the caller sets them; `Lean Responses`
+  option (default on) on the DataGrout node.
+- **MCP session reuse**: one cached session per credential (10 min TTL) with a
+  single fresh-session retry on failure — was 3 round-trips per call.
+- **Timeout option now honored** (was declared but unused).
+- Agent tool errors are returned as text to the agent (self-correction) instead
+  of aborting the agent step (`n8n-nodes-datagrout-mcp`).
+- Friendly error for malformed Tool Arguments JSON.
+- Build hygiene: pinned `@n8n/node-cli` / `n8n-workflow` (floating `*` had
+  desynced the lockfiles and broken `npm ci`); single root lockfile is now
+  canonical (per-package locks removed); CI/publish install once at the root
+  with `--ignore-scripts`.
+
 # Changelog
 
 All notable changes to this project are documented in this file.
