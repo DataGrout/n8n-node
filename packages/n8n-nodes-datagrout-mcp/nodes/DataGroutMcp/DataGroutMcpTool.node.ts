@@ -12,7 +12,7 @@ import type {
 	ISupplyDataFunctions,
 	SupplyData,
 } from 'n8n-workflow';
-import { NodeConnectionTypes, NodeOperationError, OperationalError } from 'n8n-workflow';
+import { NodeConnectionTypes, OperationalError, sleep } from 'n8n-workflow';
 import { z } from 'zod';
 
 // ────────────────────────────────────────────────────────────────────
@@ -21,6 +21,8 @@ import { z } from 'zod';
 // ────────────────────────────────────────────────────────────────────
 
 const PROTOCOL_VERSION = '2025-06-18';
+const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TASK_WAIT_MS = 120_000;
 
 type Ctx = IExecuteFunctions | ILoadOptionsFunctions | ISupplyDataFunctions;
 
@@ -40,6 +42,7 @@ async function mcpRequest(
 	ctx: Ctx,
 	body: IDataObject,
 	sessionId?: string,
+	timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ result: IDataObject; sessionId?: string }> {
 	const credentials = await ctx.getCredentials('dataGroutApi');
 	const baseUrl = String(credentials.baseUrl ?? 'https://gateway.datagrout.ai').replace(/\/$/, '');
@@ -56,6 +59,7 @@ async function mcpRequest(
 		body,
 		json: true,
 		returnFullResponse: true,
+		timeout: timeoutMs,
 	});
 
 	const newSessionId =
@@ -70,29 +74,171 @@ async function mcpRequest(
 	return { result: (parsed.result as IDataObject) ?? {}, sessionId: newSessionId };
 }
 
-async function mcpSession(ctx: Ctx): Promise<string | undefined> {
-	const { sessionId } = await mcpRequest(ctx, {
-		jsonrpc: '2.0',
-		id: 1,
-		method: 'initialize',
-		params: {
-			protocolVersion: PROTOCOL_VERSION,
-			capabilities: {},
-			clientInfo: { name: 'n8n-nodes-datagrout-mcp', version: '1.0.0' },
+async function mcpInitialize(ctx: Ctx, timeoutMs: number): Promise<string | undefined> {
+	const { sessionId } = await mcpRequest(
+		ctx,
+		{
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: {
+				protocolVersion: PROTOCOL_VERSION,
+				capabilities: {},
+				clientInfo: { name: 'n8n-nodes-datagrout-mcp', version: '1.0.0' },
+			},
 		},
-	});
-	await mcpRequest(ctx, { jsonrpc: '2.0', method: 'notifications/initialized' }, sessionId);
+		undefined,
+		timeoutMs,
+	);
+	await mcpRequest(
+		ctx,
+		{ jsonrpc: '2.0', method: 'notifications/initialized' },
+		sessionId,
+		timeoutMs,
+	);
 	return sessionId;
 }
 
-async function mcpListTools(ctx: Ctx): Promise<IDataObject[]> {
-	const sessionId = await mcpSession(ctx);
-	const { result } = await mcpRequest(
-		ctx,
-		{ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
-		sessionId,
-	);
-	return (result.tools as IDataObject[]) ?? [];
+// ── Session cache ────────────────────────────────────────────────────
+// One MCP session per credential, reused across agent tool calls in this
+// n8n process. Without it every tool invocation pays 3 round-trips and
+// abandons a gateway session. On failure of a request made with a cached
+// session, the session is dropped and the call retried ONCE fresh.
+const SESSION_TTL_MS = 10 * 60 * 1000;
+const sessionCache = new Map<string, { sessionId: string | undefined; expiresAt: number }>();
+
+async function sessionKey(ctx: Ctx): Promise<string> {
+	const credentials = await ctx.getCredentials('dataGroutApi');
+	return `${credentials.baseUrl as string}|${credentials.serverId as string}|${(
+		credentials.apiToken as string
+	).slice(-8)}`;
+}
+
+async function withSession<T>(
+	ctx: Ctx,
+	timeoutMs: number,
+	fn: (sessionId: string | undefined) => Promise<T>,
+): Promise<T> {
+	const key = await sessionKey(ctx);
+	const cached = sessionCache.get(key);
+	const fresh = !cached || cached.expiresAt < Date.now();
+
+	let sessionId: string | undefined;
+	if (fresh) {
+		sessionId = await mcpInitialize(ctx, timeoutMs);
+		sessionCache.set(key, { sessionId, expiresAt: Date.now() + SESSION_TTL_MS });
+	} else {
+		sessionId = cached.sessionId;
+	}
+
+	try {
+		return await fn(sessionId);
+	} catch (error) {
+		if (fresh) throw error;
+		sessionCache.delete(key);
+		const retryId = await mcpInitialize(ctx, timeoutMs);
+		sessionCache.set(key, { sessionId: retryId, expiresAt: Date.now() + SESSION_TTL_MS });
+		return await fn(retryId);
+	}
+}
+
+async function mcpListTools(ctx: Ctx, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<IDataObject[]> {
+	return await withSession(ctx, timeoutMs, async (sessionId) => {
+		const { result } = await mcpRequest(
+			ctx,
+			{ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+			sessionId,
+			timeoutMs,
+		);
+		return (result.tools as IDataObject[]) ?? [];
+	});
+}
+
+// ── DataGrout idioms ─────────────────────────────────────────────────
+
+// Long-running DataGrout calls DETACH to a background task and return
+// {status: "detached", task_ref}. Collecting via tasks.wait here means the
+// agent just receives the finished result — no async dance in its context.
+function detachedTaskRef(result: IDataObject): string | undefined {
+	const sc = (result.structuredContent as IDataObject) ?? {};
+	if (sc.status === 'detached' && typeof sc.task_ref === 'string') return sc.task_ref;
+	return undefined;
+}
+
+async function collectDetached(
+	ctx: Ctx,
+	sessionId: string | undefined,
+	taskRef: string,
+	budgetMs: number,
+	timeoutMs: number,
+): Promise<IDataObject | undefined> {
+	const deadline = Date.now() + budgetMs;
+	let ref = taskRef;
+
+	while (Date.now() < deadline) {
+		const { result } = await mcpRequest(
+			ctx,
+			{
+				jsonrpc: '2.0',
+				id: 4,
+				method: 'tools/call',
+				params: { name: 'data-grout@1/tasks.wait@1', arguments: { task_ref: ref } },
+			},
+			sessionId,
+			timeoutMs,
+		);
+
+		const sc = (result.structuredContent as IDataObject) ?? {};
+		// Direct tools/call returns the task record at the TOP of structuredContent
+		// (live-verified 2026-07-23); the discovery.perform wrapper nests it under
+		// .result. Support both.
+		const task =
+			typeof sc.completed !== 'undefined' || sc.task_ref
+				? sc
+				: ((sc.result as IDataObject) ?? {});
+
+		if (task.completed === true && typeof task.result === 'object' && task.result !== null) {
+			const payload = task.result as IDataObject;
+			return {
+				content: [{ type: 'text', text: JSON.stringify(payload) }],
+				structuredContent: payload,
+			};
+		}
+		if (task.status === 'failed' || (task.error && task.completed === true)) {
+			return result;
+		}
+		ref = (task.task_ref as string) ?? ref;
+		await sleep(1000);
+	}
+
+	// Budget exhausted: hand the agent a clean, actionable message instead of
+	// the raw detach stub (whose server hint may reference tools the agent
+	// cannot call on a filtered server).
+	const note =
+		'The operation needs more time and is still running in the background. ' +
+		'Ask again in a moment — the finished work is reused, so the retry is fast.';
+	return {
+		content: [{ type: 'text', text: note }],
+		structuredContent: { status: 'running', task_ref: ref, note },
+	};
+}
+
+// discovery.plan / discovery.perform accept lean/head response-shaping
+// params that keep oversized result sets out of the agent's context
+// (preview + server-side cache_ref instead of every row). Injected only
+// for those tools and only when the agent didn't set them itself.
+function injectLeanDefaults(toolName: string, args: IDataObject): IDataObject {
+	// Servers may list tools under their canonical name
+	// (data-grout@1/discovery.plan@1) or a sanitized form (discovery_plan) —
+	// match both (live-observed 2026-07-24: the tools/list of an
+	// intelligent-interface server returns sanitized names).
+	if (/(^|\/)discovery[._](plan|guide)(@\d+)?$/.test(toolName)) {
+		return { lean: true, head: true, ...args };
+	}
+	if (/(^|\/)discovery[._]perform(@\d+)?$/.test(toolName)) {
+		return { head: true, ...args };
+	}
+	return args;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -303,25 +449,52 @@ export class DataGroutMcpTool implements INodeType {
 				schema: toZodSchema(mcpTool.inputSchema),
 				metadata: { isFromToolkit: true },
 				func: async (args: Record<string, unknown>) => {
-					const sessionId = await mcpSession(this);
-					const { result } = await mcpRequest(
-						this,
-						{
-							jsonrpc: '2.0',
-							id: 3,
-							method: 'tools/call',
-							params: { name: realName, arguments: (args ?? {}) as IDataObject },
-						},
-						sessionId,
-					);
-					if (result.isError) {
-						const content = (result.content as IDataObject[]) ?? [];
-						const message =
-							(content.find((c) => c.type === 'text')?.text as string) ??
-							'Tool returned an error';
-						throw new NodeOperationError(this.getNode(), message, { itemIndex });
+					try {
+						const callArgs = injectLeanDefaults(realName, (args ?? {}) as IDataObject);
+
+						const result = await withSession(this, DEFAULT_TIMEOUT_MS, async (sessionId) => {
+							const { result: callResult } = await mcpRequest(
+								this,
+								{
+									jsonrpc: '2.0',
+									id: 3,
+									method: 'tools/call',
+									params: { name: realName, arguments: callArgs },
+								},
+								sessionId,
+								DEFAULT_TIMEOUT_MS,
+							);
+
+							// Transparent background-task collection: long DataGrout
+							// calls detach; poll tasks.wait so the agent receives the
+							// finished result instead of a task stub it must manage.
+							const taskRef = detachedTaskRef(callResult);
+							if (taskRef) {
+								const collected = await collectDetached(
+									this,
+									sessionId,
+									taskRef,
+									DEFAULT_TASK_WAIT_MS,
+									DEFAULT_TIMEOUT_MS,
+								);
+								if (collected) return collected;
+							}
+							return callResult;
+						});
+
+						if (result.isError) {
+							const content = (result.content as IDataObject[]) ?? [];
+							const message =
+								(content.find((c) => c.type === 'text')?.text as string) ??
+								'Tool returned an error';
+							// Return the error TEXT so the agent can read it and
+							// self-correct — throwing aborts the whole agent step.
+							return `Error: ${message}`;
+						}
+						return formatToolResult(result);
+					} catch (error) {
+						return `Error: ${(error as Error).message}`;
 					}
-					return formatToolResult(result);
 				},
 			});
 		});

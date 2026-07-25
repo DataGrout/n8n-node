@@ -22,8 +22,18 @@ Gateway Base URL), so configure once and use either package.
 3. Attach the node to an AI Agent (or use it directly in a workflow).
 
 Zero-config alternative: n8n's built-in **MCP Client Tool** pointed at
-`https://gateway.datagrout.ai/servers/{uuid}/mcp` also works — these packages add
-DataGrout branding, a purpose-built credential, and the tool permission filter.
+`https://gateway.datagrout.ai/servers/{uuid}/mcp` also works. What these packages
+add beyond branding and the credential:
+
+- **Background tasks handled for you** — when a slow request moves to a
+  background task server-side, the node waits and returns the finished result;
+  workflows and agents never deal with task references or polling.
+- **Lean responses by default** — a 10,000-row result arrives as a short
+  preview plus a server-side reference for DataGrout's compute tools, instead
+  of flooding the agent's context.
+- **Faster calls** — the server connection is reused between calls.
+- **Tool permission filter** — All / Selected / All Except, enforced on both
+  listing and execution.
 
 ## Development
 

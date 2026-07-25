@@ -1,0 +1,109 @@
+{
+  "name": "DataGrout AI Agent — verified answers from your business data",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "chat1",
+      "name": "When chat message received",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "REPLACE-ON-IMPORT"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a precise, AUTONOMOUS, read-only data assistant. Offload the ENTIRE task to DataGrout's symbolic planner and let it run server-side. Do NOT pick, chain, or reason about individual tools, NEVER write SOQL/JQL, and NEVER pull records into this conversation. FINISH THE WHOLE TASK AUTONOMOUSLY IN ONE RUN — never ask the user how to proceed, never stop half-way.\n1. For each app leg, make ONE call: discovery.plan with the user’s COMPLETE request for that leg as the `goal` — VERBATIM, including every computation instruction (scores, normalization, penalties, rankings, outliers). Never shorten, paraphrase, or split computations into separate calls: DataGrout decomposes and computes server-side, and can only do so if it sees the full goal. Name the source app (Salesforce, Jira, ...) AND `execute: true`. This PLANS and RUNS the recommended skill server-side in a SINGLE call and returns the executed `result` directly — you do NOT call discovery.perform, and there is no separate handle to run. DataGrout writes the exact query/fields from your goal (it uses inclusive CONTAINS/LIKE matching).\n2. For a cross-app task, do ONE leg at a time (the Salesforce leg, then the Jira leg), each a single discovery.plan(execute:true) call with its own concise goal.\n3. If a response comes back NOT executed because it lists `needed` inputs, call discovery.plan again with the same goal plus those values under `inputs` and execute:true.\n4. If a returned `result` is still a large list, add a `refract` goal to the same discovery.plan(execute:true) call so the summary is produced server-side.\nIf a response contains a task_ref, the job is STILL RUNNING server-side and usually finishes within seconds — its result will be waiting for you. Immediately call tasks.wait with that task_ref, and call it again if still running. Never end your turn, never ask the user, and never answer without the retrieved result. Never fan out per record. Answer concisely with the supporting names. Read-only."
+        }
+      },
+      "id": "agent1",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.9,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5-mini"
+        },
+        "options": {}
+      },
+      "id": "llm1",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        180,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "toolsToInclude": "all"
+      },
+      "id": "dgmcp1",
+      "name": "DataGrout MCP",
+      "type": "@datagrout/n8n-nodes-datagrout-mcp.dataGroutMcpTool",
+      "typeVersion": 1,
+      "position": [
+        420,
+        220
+      ],
+      "credentials": {
+        "dataGroutApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "DataGrout API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DataGrout MCP": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

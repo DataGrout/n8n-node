@@ -1,6 +1,18 @@
-# Changelog
+## Unreleased
 
-All notable changes to this project are documented in this file.
+- Long-running DataGrout calls are now handled automatically: when the server
+  moves a slow request to a background task, the node waits and returns the
+  finished result. Configurable via **Wait for Background Tasks (Ms)**
+  (default 120000; set 0 to get the task reference back immediately).
+- **Lean Responses** (on by default): large result sets come back as a short
+  preview plus a server-side reference you can pass to DataGrout's compute
+  tools, instead of thousands of rows flooding the workflow or agent context.
+- Faster tool calls: the connection to your DataGrout server is now reused
+  between calls instead of re-established every time.
+- The **Timeout (Ms)** option is now applied to requests.
+- Clearer errors: invalid JSON in **Tool Arguments** says so directly, and
+  AI Agent tool errors are returned to the agent so it can correct itself.
+
 
 ## [0.1.0] - 2026-07-22
 

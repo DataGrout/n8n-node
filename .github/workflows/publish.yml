@@ -57,18 +57,17 @@ jobs:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
+      # Root workspace install (single canonical lockfile); --ignore-scripts
+      # skips isolated-vm's native build, which is never needed to build/publish.
       - name: Install
-        working-directory: ${{ steps.pkg.outputs.dir }}
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build
-        working-directory: ${{ steps.pkg.outputs.dir }}
-        run: npm run build
+        run: npm run build --workspace=${{ steps.pkg.outputs.dir }}
 
       - name: Lint (strict, verified package only)
         if: steps.pkg.outputs.dir == 'packages/n8n-nodes-datagrout'
-        working-directory: ${{ steps.pkg.outputs.dir }}
-        run: npm run lint
+        run: npm run lint --workspace=${{ steps.pkg.outputs.dir }}
 
       - name: Verify tag matches package.json version
         if: github.event_name == 'push'
