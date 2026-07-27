@@ -14,6 +14,11 @@
   AI Agent tool errors are returned to the agent so it can correct itself.
 
 
+## [0.1.1] - 2026-07-27
+
+- Republished via GitHub Actions with npm provenance (required for n8n
+  verification); no functional changes from 0.1.0.
+
 ## [0.1.0] - 2026-07-22
 
 Initial release.
