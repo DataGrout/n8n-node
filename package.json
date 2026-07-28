@@ -14,5 +14,8 @@
         "type": "git",
         "url": "git+https://github.com/DataGrout/n8n-node.git"
     },
-    "homepage": "https://github.com/DataGrout/n8n-node"
+    "homepage": "https://github.com/DataGrout/n8n-node",
+    "scripts": {
+        "test": "node --test --experimental-strip-types test/*.test.ts"
+    }
 }

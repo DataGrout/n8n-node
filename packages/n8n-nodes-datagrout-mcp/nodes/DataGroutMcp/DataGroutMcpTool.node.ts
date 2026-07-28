@@ -15,6 +15,15 @@ import type {
 import { NodeConnectionTypes, OperationalError, sleep } from 'n8n-workflow';
 import { z } from 'zod';
 
+import {
+	detachedTaskRef,
+	formatToolResult,
+	injectLeanDefaults,
+	parsePossiblySse,
+	sanitizeToolName,
+	taskRecord,
+} from './pure';
+
 // ────────────────────────────────────────────────────────────────────
 // Minimal MCP client over Streamable HTTP (same protocol implementation
 // as @datagrout/n8n-nodes-datagrout, widened to ISupplyDataFunctions).
@@ -25,18 +34,6 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_TASK_WAIT_MS = 120_000;
 
 type Ctx = IExecuteFunctions | ILoadOptionsFunctions | ISupplyDataFunctions;
-
-function parsePossiblySse(raw: unknown): IDataObject {
-	if (typeof raw === 'object' && raw !== null) return raw as IDataObject;
-	const text = String(raw);
-	const dataLines = text
-		.split('\n')
-		.filter((l) => l.startsWith('data:'))
-		.map((l) => l.slice(5).trim())
-		.filter(Boolean);
-	const payload = dataLines.length ? dataLines[dataLines.length - 1] : text;
-	return JSON.parse(payload) as IDataObject;
-}
 
 async function mcpRequest(
 	ctx: Ctx,
@@ -156,15 +153,6 @@ async function mcpListTools(ctx: Ctx, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<I
 
 // ── DataGrout idioms ─────────────────────────────────────────────────
 
-// Long-running DataGrout calls DETACH to a background task and return
-// {status: "detached", task_ref}. Collecting via tasks.wait here means the
-// agent just receives the finished result — no async dance in its context.
-function detachedTaskRef(result: IDataObject): string | undefined {
-	const sc = (result.structuredContent as IDataObject) ?? {};
-	if (sc.status === 'detached' && typeof sc.task_ref === 'string') return sc.task_ref;
-	return undefined;
-}
-
 async function collectDetached(
 	ctx: Ctx,
 	sessionId: string | undefined,
@@ -188,14 +176,7 @@ async function collectDetached(
 			timeoutMs,
 		);
 
-		const sc = (result.structuredContent as IDataObject) ?? {};
-		// Direct tools/call returns the task record at the TOP of structuredContent
-		// (live-verified 2026-07-23); the discovery.perform wrapper nests it under
-		// .result. Support both.
-		const task =
-			typeof sc.completed !== 'undefined' || sc.task_ref
-				? sc
-				: ((sc.result as IDataObject) ?? {});
+		const task = taskRecord(result.structuredContent as IDataObject);
 
 		if (task.completed === true && typeof task.result === 'object' && task.result !== null) {
 			const payload = task.result as IDataObject;
@@ -223,24 +204,6 @@ async function collectDetached(
 	};
 }
 
-// discovery.plan / discovery.perform accept lean/head response-shaping
-// params that keep oversized result sets out of the agent's context
-// (preview + server-side cache_ref instead of every row). Injected only
-// for those tools and only when the agent didn't set them itself.
-function injectLeanDefaults(toolName: string, args: IDataObject): IDataObject {
-	// Servers may list tools under their canonical name
-	// (data-grout@1/discovery.plan@1) or a sanitized form (discovery_plan) —
-	// match both (live-observed 2026-07-24: the tools/list of an
-	// intelligent-interface server returns sanitized names).
-	if (/(^|\/)discovery[._](plan|guide)(@\d+)?$/.test(toolName)) {
-		return { lean: true, head: true, ...args };
-	}
-	if (/(^|\/)discovery[._]perform(@\d+)?$/.test(toolName)) {
-		return { head: true, ...args };
-	}
-	return args;
-}
-
 // ────────────────────────────────────────────────────────────────────
 // Tool conversion helpers
 // ────────────────────────────────────────────────────────────────────
@@ -257,42 +220,6 @@ function toZodSchema(inputSchema: unknown): z.ZodTypeAny {
 	} catch {
 		return z.object({});
 	}
-}
-
-/** Make an MCP tool name safe for LLM function names and unique. */
-function sanitizeToolName(name: string, used: Set<string>): string {
-	let base = name
-		.replace(/[^a-zA-Z0-9_-]/g, '_')
-		.replace(/_+/g, '_')
-		.slice(0, 64);
-	if (!base) base = 'tool';
-	let candidate = base;
-	let n = 1;
-	while (used.has(candidate)) {
-		const suffix = `_${n++}`;
-		candidate = base.slice(0, 64 - suffix.length) + suffix;
-	}
-	used.add(candidate);
-	return candidate;
-}
-
-/** Flatten an MCP tool result into a non-empty string for the agent. */
-function formatToolResult(result: IDataObject): string {
-	const content = result.content;
-	if (Array.isArray(content)) {
-		const text = content
-			.map((c) => {
-				const block = c as { type?: string; text?: string };
-				return block?.type === 'text' && typeof block.text === 'string'
-					? block.text
-					: JSON.stringify(c);
-			})
-			.join('\n')
-			.trim();
-		if (text.length) return text;
-	}
-	const serialized = JSON.stringify(result);
-	return serialized && serialized !== 'undefined' ? serialized : '(no result)';
 }
 
 /**
