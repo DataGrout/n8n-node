@@ -57,6 +57,9 @@ jobs:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
       # Root workspace install (single canonical lockfile); --ignore-scripts
       # skips isolated-vm's native build, which is never needed to build/publish.
       - name: Install
