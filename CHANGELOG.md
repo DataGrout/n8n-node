@@ -14,6 +14,12 @@
   AI Agent tool errors are returned to the agent so it can correct itself.
 
 
+## [0.1.3] - 2026-07-28
+
+- Repository restructured to the standard single-package layout (credentials/
+  and nodes/ at the repo root) so n8n verification vetting can locate the
+  credential source. No functional changes.
+
 ## [0.1.2] - 2026-07-28
 
 - Added `repository.directory` so n8n verification vetting can locate the

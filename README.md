@@ -1,62 +1,81 @@
-# DataGrout n8n Nodes
+# @datagrout/n8n-nodes-datagrout
 
-Connect [n8n](https://n8n.io) — and its **AI Agents** — to your
-[DataGrout](https://datagrout.ai) MCP servers.
+Connect n8n — and its **AI Agents** — to your **DataGrout MCP servers**. List a
+server's tools and execute them, right inside your workflows.
 
-This monorepo ships two community packages:
+## Zero-config alternative
 
-| Package | What it is | Install target |
-|---|---|---|
-| [`@datagrout/n8n-nodes-datagrout`](packages/n8n-nodes-datagrout) | **DataGrout** node — MCP client with **List Tools** / **Execute Tool**, an All/Selected/All Except tool filter, and a Bearer credential. Zero runtime dependencies, verification-eligible. | n8n Cloud + self-hosted |
-| [`@datagrout/n8n-nodes-datagrout-mcp`](packages/n8n-nodes-datagrout-mcp) | **DataGrout MCP** node — AI Agent tool sub-node that exposes **every server tool as a separate agent tool** (the Atlassian-MCP experience), filtered by All/Selected/All Except. Ships langchain dependencies, so not verification-eligible. | self-hosted only |
+You can already use DataGrout with **no custom node**: add n8n's built-in
+**MCP Client Tool**, set the Endpoint to your gateway URL
+(`https://gateway.datagrout.ai/servers/<uuid>/mcp`), and use Bearer/OAuth2 auth
+with All / Selected / All Except. This package adds DataGrout branding, a
+purpose-built credential (token + server ID), and discoverability in the nodes
+panel.
 
-Both share the same **DataGrout API** credential (API Token + Server ID +
-Gateway Base URL), so configure once and use either package.
+## What the node handles for you
 
-## Quick start
+- **Background tasks**: slow DataGrout requests are moved to a background task
+  server-side; the node waits and returns the finished result (configurable via
+  the **Wait for Background Tasks** option — set 0 to receive the task
+  reference instead).
+- **Lean responses** (on by default): large result sets return as a short
+  preview plus a server-side reference that DataGrout's compute tools accept,
+  keeping huge row sets out of your workflow and agent context.
+- **Connection reuse**: calls share one server session instead of
+  re-connecting every time.
 
-1. Install a package from **Settings → Community Nodes**
-   (self-hosted agent-tool usage needs `N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true`).
-2. Create a **DataGrout API** credential — token from your DataGrout dashboard,
-   Server ID from `gateway.datagrout.ai/servers/{uuid}`.
-3. Attach the node to an AI Agent (or use it directly in a workflow).
+## Installation
 
-Zero-config alternative: n8n's built-in **MCP Client Tool** pointed at
-`https://gateway.datagrout.ai/servers/{uuid}/mcp` also works. What these packages
-add beyond branding and the credential:
+- **n8n Cloud / self-hosted:** install `@datagrout/n8n-nodes-datagrout` from the
+  Community Nodes panel.
+- **Self-hosted, as an agent tool:** set
+  `N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true` and restart. (On Cloud, verified
+  nodes work as agent tools with no env var.)
 
-- **Background tasks handled for you** — when a slow request moves to a
-  background task server-side, the node waits and returns the finished result;
-  workflows and agents never deal with task references or polling.
-- **Lean responses by default** — a 10,000-row result arrives as a short
-  preview plus a server-side reference for DataGrout's compute tools, instead
-  of flooding the agent's context.
-- **Faster calls** — the server connection is reused between calls.
-- **Tool permission filter** — All / Selected / All Except, enforced on both
-  listing and execution.
+## Credentials — DataGrout API
 
-## Development
+Create a **DataGrout API** credential:
 
-```bash
-cd packages/n8n-nodes-datagrout       # or packages/n8n-nodes-datagrout-mcp
-npm install
-npm run build
-npm run lint                          # verified package only; must stay clean
-```
+| Field | Description |
+|-------|-------------|
+| **API Token** | Generate it in your DataGrout dashboard. |
+| **Server ID** | Your server's UUID (from `gateway.datagrout.ai/servers/{uuid}`). |
+| **Gateway Base URL** | Defaults to `https://gateway.datagrout.ai`. |
 
-## Releasing
+The credential test runs a minimal MCP `initialize` round-trip against your server.
 
-Publishing runs through GitHub Actions with npm provenance (required for n8n
-verification). Push a tag named `<package-dir>@<version>`, e.g.:
+## Operations
 
-```bash
-git tag n8n-nodes-datagrout@0.1.0 && git push origin n8n-nodes-datagrout@0.1.0
-git tag n8n-nodes-datagrout-mcp@0.1.0 && git push origin n8n-nodes-datagrout-mcp@0.1.0
-```
+- **List Tools** — returns each tool's name, description, and input schema
+  (respects the tool filter below).
+- **Execute Tool** — runs a named tool with JSON **Tool Arguments** and returns
+  its result.
 
-One-time setup: on npmjs.com, configure a **Trusted Publisher** for each package
-(repo `DataGrout/n8n-node`, workflow `publish.yml`) — or store a granular
-`NPM_TOKEN` in the repo's Actions secrets as fallback.
+## Tool filter — All / Selected / All Except
+
+- **All** — every tool on the server.
+- **Selected** — only the tools you pick.
+- **All Except** — every tool except the ones you pick.
+
+When the node is attached to an AI Agent, this is the **permission boundary** for
+what the agent is allowed to call.
+
+## Use as an AI Agent tool
+
+Attach the **DataGrout** node to the AI Agent's tool connector. The agent reads
+the node description + tool list and supplies the tool name and arguments itself
+(via `$fromAI`). Typical flow: the agent calls **List Tools** to discover names,
+then **Execute Tool**.
+
+**Example:** Chat Trigger → AI Agent (with a chat model) → attach **DataGrout** as
+a tool → *"List the tools on my DataGrout server, then run &lt;tool&gt;."*
+
+## Resources
+
+- [DataGrout documentation](https://library.datagrout.ai/)
+- [DataGrout authentication guide](https://library.datagrout.ai/authentication)
+- [n8n community nodes documentation](https://docs.n8n.io/integrations/community-nodes/)
+- Repository: https://github.com/DataGrout/n8n-node
 
 ## License
 

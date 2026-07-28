@@ -1,35 +1,12 @@
-# Publishes a package from this monorepo to npm on version-tag push.
-#
-# n8n requires community nodes to be published via GitHub Actions with npm
-# provenance (mandatory since May 1, 2026). Provenance lets anyone verify a
-# package was built by this workflow, from this repo and commit.
-#
-# Tag format:  <package-dir>@<version>
-#   n8n-nodes-datagrout@0.1.0        → publishes packages/n8n-nodes-datagrout
-#   n8n-nodes-datagrout-mcp@0.1.0    → publishes packages/n8n-nodes-datagrout-mcp
-#
-# One-time setup (choose one):
-#   1. Trusted Publisher (recommended): npmjs.com → package → Settings →
-#      Publish access → Trusted Publishers → repo DataGrout/n8n-node,
-#      workflow publish.yml. OIDC — no secrets needed.
-#   2. Token fallback: granular access token stored as NPM_TOKEN in
-#      Actions secrets.
+# Publishes this n8n community node to public npm with provenance on tag push.
+# Tag format: n8n-nodes-datagrout@<version> (must match package.json version).
 name: Publish package
 
 on:
   push:
     tags:
       - 'n8n-nodes-datagrout@*'
-      - 'n8n-nodes-datagrout-mcp@*'
   workflow_dispatch:
-    inputs:
-      package:
-        description: 'Package directory under packages/'
-        required: true
-        type: choice
-        options:
-          - n8n-nodes-datagrout
-          - n8n-nodes-datagrout-mcp
 
 permissions:
   contents: read
@@ -41,40 +18,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve package from tag or input
-        id: pkg
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            PKG="${{ inputs.package }}"
-          else
-            PKG="${GITHUB_REF_NAME%@*}"
-          fi
-          echo "dir=packages/${PKG}" >> "$GITHUB_OUTPUT"
-          echo "Publishing ${PKG}"
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
+      # Trusted Publishing (OIDC) requires npm >= 11.5.
       - name: Update npm for trusted publishing
         run: npm install -g npm@latest
 
-      # Root workspace install (single canonical lockfile); --ignore-scripts
-      # skips isolated-vm's native build, which is never needed to build/publish.
       - name: Install
         run: npm ci --ignore-scripts
 
       - name: Build
-        run: npm run build --workspace=${{ steps.pkg.outputs.dir }}
+        run: npm run build
 
-      - name: Lint (strict, verified package only)
-        if: steps.pkg.outputs.dir == 'packages/n8n-nodes-datagrout'
-        run: npm run lint --workspace=${{ steps.pkg.outputs.dir }}
+      - name: Lint (strict, must stay clean)
+        run: npm run lint
 
       - name: Verify tag matches package.json version
         if: github.event_name == 'push'
-        working-directory: ${{ steps.pkg.outputs.dir }}
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#*@}"
           PKG_VERSION="$(node -p "require('./package.json').version")"
@@ -83,9 +46,6 @@ jobs:
           fi
 
       - name: Publish with provenance
-        working-directory: ${{ steps.pkg.outputs.dir }}
         run: npm publish --access public --provenance
         env:
-          # Unused once npm Trusted Publishing (OIDC) is configured;
-          # kept as fallback for token-based publishing.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
