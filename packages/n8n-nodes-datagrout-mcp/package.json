@@ -16,7 +16,8 @@
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/DataGrout/n8n-node.git"
+        "url": "git+https://github.com/DataGrout/n8n-node.git",
+        "directory": "packages/n8n-nodes-datagrout-mcp"
     },
     "scripts": {
         "build": "tsc && cp nodes/DataGroutMcp/*.svg dist/nodes/DataGroutMcp/ && cp -r icons dist/",

@@ -1,6 +1,6 @@
 {
     "name": "@datagrout/n8n-nodes-datagrout",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "n8n community node to connect AI Agents and workflows to DataGrout MCP servers",
     "license": "MIT",
     "homepage": "https://github.com/DataGrout/n8n-node",
@@ -16,7 +16,8 @@
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/DataGrout/n8n-node.git"
+        "url": "git+https://github.com/DataGrout/n8n-node.git",
+        "directory": "packages/n8n-nodes-datagrout"
     },
     "scripts": {
         "build": "n8n-node build",

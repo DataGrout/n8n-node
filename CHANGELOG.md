@@ -14,6 +14,11 @@
   AI Agent tool errors are returned to the agent so it can correct itself.
 
 
+## [0.1.2] - 2026-07-28
+
+- Added `repository.directory` so n8n verification vetting can locate the
+  credential/node sources in the monorepo.
+
 ## [0.1.1] - 2026-07-27
 
 - Republished via GitHub Actions with npm provenance (required for n8n
