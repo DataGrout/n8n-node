@@ -33,6 +33,10 @@ jobs:
       - name: Install
         run: npm ci --ignore-scripts
 
+      - name: Unit tests (pure helpers, both packages)
+        if: matrix.package == 'n8n-nodes-datagrout'
+        run: npm test
+
       - name: Build
         run: npm run build --workspace=packages/${{ matrix.package }}
 

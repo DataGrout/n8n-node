@@ -26,8 +26,10 @@ credential and a **Tools to Include** filter.
 1. Install `@datagrout/n8n-nodes-datagrout-mcp` from **Settings → Community Nodes**.
 2. Set `N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true` and restart n8n.
 
-Supported n8n versions: **2.29.x** (dependencies are pinned to match; other
-versions may work but are untested).
+**Version compatibility.** This package ships `@langchain/core` and `zod` at
+versions pinned to match what current n8n 2.x bundles. If your n8n bundles
+different major versions, the agent tool may fail to register — check the
+n8n logs for this node on startup.
 
 ## Credential — DataGrout API
 

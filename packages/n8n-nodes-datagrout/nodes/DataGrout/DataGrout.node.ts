@@ -16,6 +16,8 @@ import {
 	sleep,
 } from 'n8n-workflow';
 
+import { detachedTaskRef, injectLeanDefaults, parsePossiblySse, taskRecord } from './pure';
+
 // ────────────────────────────────────────────────────────────────────
 // Minimal MCP client over Streamable HTTP — zero dependencies.
 // Handles both application/json and text/event-stream (SSE) responses.
@@ -27,19 +29,6 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_TASK_WAIT_MS = 120_000;
 
 type Ctx = IExecuteFunctions | ILoadOptionsFunctions;
-
-function parsePossiblySse(raw: unknown): IDataObject {
-	if (typeof raw === 'object' && raw !== null) return raw as IDataObject;
-	const text = String(raw);
-	// SSE frames: lines starting with "data:"; last data frame carries the JSON-RPC response
-	const dataLines = text
-		.split('\n')
-		.filter((l) => l.startsWith('data:'))
-		.map((l) => l.slice(5).trim())
-		.filter(Boolean);
-	const payload = dataLines.length ? dataLines[dataLines.length - 1] : text;
-	return JSON.parse(payload) as IDataObject;
-}
 
 async function mcpRequest(
 	ctx: Ctx,
@@ -170,16 +159,6 @@ async function mcpListTools(ctx: Ctx, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<I
 
 // ── DataGrout idioms ─────────────────────────────────────────────────
 
-// Long-running DataGrout calls DETACH to a background task and return
-// {status: "detached", task_ref: "..."} — the caller is expected to collect
-// via tasks.wait. Handling that here means workflows/agents just get the
-// final result, with the async dance invisible.
-function detachedTaskRef(result: IDataObject): string | undefined {
-	const sc = (result.structuredContent as IDataObject) ?? {};
-	if (sc.status === 'detached' && typeof sc.task_ref === 'string') return sc.task_ref;
-	return undefined;
-}
-
 async function collectDetached(
 	ctx: Ctx,
 	sessionId: string | undefined,
@@ -203,14 +182,7 @@ async function collectDetached(
 			timeoutMs,
 		);
 
-		const sc = (result.structuredContent as IDataObject) ?? {};
-		// Direct tools/call returns the task record at the TOP of structuredContent
-		// (live-verified 2026-07-23); the discovery.perform wrapper nests it under
-		// .result. Support both.
-		const task =
-			typeof sc.completed !== 'undefined' || sc.task_ref
-				? sc
-				: ((sc.result as IDataObject) ?? {});
+		const task = taskRecord(result.structuredContent as IDataObject);
 
 		if (task.completed === true && typeof task.result === 'object' && task.result !== null) {
 			// task.result is the finished tool PAYLOAD (already unwrapped) —
@@ -240,23 +212,6 @@ async function collectDetached(
 		content: [{ type: 'text', text: note }],
 		structuredContent: { status: 'running', task_ref: ref, note },
 	};
-}
-
-// discovery.plan / discovery.perform accept lean/head response-shaping
-// params that protect the caller's context window from oversized payloads.
-// Injected only for those tools and only when the caller didn't set them.
-function injectLeanDefaults(toolName: string, args: IDataObject): IDataObject {
-	// Servers may list tools under their canonical name
-	// (data-grout@1/discovery.plan@1) or a sanitized form (discovery_plan) —
-	// match both (live-observed 2026-07-24: the tools/list of an
-	// intelligent-interface server returns sanitized names).
-	if (/(^|\/)discovery[._](plan|guide)(@\d+)?$/.test(toolName)) {
-		return { lean: true, head: true, ...args };
-	}
-	if (/(^|\/)discovery[._]perform(@\d+)?$/.test(toolName)) {
-		return { head: true, ...args };
-	}
-	return args;
 }
 
 // ────────────────────────────────────────────────────────────────────
