@@ -147,8 +147,10 @@ async function withSession<T>(
 		// A request on a REUSED session may have failed because the gateway
 		// dropped it — invalidate and retry once on a fresh session. A failure
 		// on a fresh session is a real error.
-		// eslint-disable-next-line @n8n/community-nodes/require-node-api-error -- rethrown unchanged; the execute() boundary wraps it in NodeApiError/NodeOperationError with the item index
-		if (fresh) throw error;
+		if (fresh) {
+			if (error instanceof NodeOperationError) throw new NodeOperationError(ctx.getNode(), error);
+			throw new NodeApiError(ctx.getNode(), error as JsonObject);
+		}
 		sessionCache.delete(key);
 		const retryId = await mcpInitialize(ctx, timeoutMs);
 		sessionCache.set(key, { sessionId: retryId, expiresAt: Date.now() + SESSION_TTL_MS });

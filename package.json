@@ -1,6 +1,6 @@
 {
     "name": "@datagrout/n8n-nodes-datagrout",
-    "version": "0.1.3",
+    "version": "0.1.4",
     "description": "n8n community node to connect AI Agents and workflows to DataGrout MCP servers",
     "license": "MIT",
     "homepage": "https://github.com/DataGrout/n8n-node",

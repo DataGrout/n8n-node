@@ -14,6 +14,11 @@
   AI Agent tool errors are returned to the agent so it can correct itself.
 
 
+## [0.1.4] - 2026-07-29
+
+- Session-retry errors are now wrapped in `NodeApiError` instead of re-thrown
+  raw (verification scanner finding).
+
 ## [0.1.3] - 2026-07-28
 
 - Repository restructured to the standard single-package layout (credentials/
