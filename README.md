@@ -1,40 +1,31 @@
 # @datagrout/n8n-nodes-datagrout
 
-Connect n8n — and its **AI Agents** — to your **DataGrout MCP servers**. List a
-server's tools and execute them, right inside your workflows.
-
-## Zero-config alternative
-
-You can already use DataGrout with **no custom node**: add n8n's built-in
-**MCP Client Tool**, set the Endpoint to your gateway URL
-(`https://gateway.datagrout.ai/servers/<uuid>/mcp`), and use Bearer/OAuth2 auth
-with All / Selected / All Except. This package adds DataGrout branding, a
-purpose-built credential (token + server ID), and discoverability in the nodes
-panel.
+**DataGrout MCP** — an n8n AI Agent tool node that connects your agents to a
+[DataGrout](https://datagrout.ai) MCP server. It lists the server's tools when
+attached and exposes **every tool as a separate agent tool** (name, description,
+and input schema each) — the agent picks and calls them directly. No operation
+selector: just the credential and a tool filter.
 
 ## What the node handles for you
 
-- **Background tasks**: slow DataGrout requests are moved to a background task
-  server-side; the node waits and returns the finished result (configurable via
-  the **Wait for Background Tasks** option — set 0 to receive the task
-  reference instead).
-- **Lean responses** (on by default): large result sets return as a short
-  preview plus a server-side reference that DataGrout's compute tools accept,
-  keeping huge row sets out of your workflow and agent context.
-- **Connection reuse**: calls share one server session instead of
+- **Background tasks** — slow DataGrout requests are moved to a background task
+  server-side; the node waits and returns the finished result.
+- **Lean responses** — large result sets return as a short preview plus a
+  server-side reference DataGrout's compute tools accept, keeping huge row sets
+  out of the agent's context.
+- **Connection reuse** — calls share one server session instead of
   re-connecting every time.
 
-## Installation
+## Installation (self-hosted)
 
-- **n8n Cloud / self-hosted:** install `@datagrout/n8n-nodes-datagrout` from the
-  Community Nodes panel.
-- **Self-hosted, as an agent tool:** set
-  `N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true` and restart. (On Cloud, verified
-  nodes work as agent tools with no env var.)
+1. **Settings → Community Nodes → Install** → `@datagrout/n8n-nodes-datagrout`.
+2. Set `N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true` and restart n8n.
+
+> This package ships runtime dependencies (`@langchain/core`, `zod`) and
+> targets self-hosted instances. Supported n8n versions: **2.29.x**
+> (dependencies are pinned to match).
 
 ## Credentials — DataGrout API
-
-Create a **DataGrout API** credential:
 
 | Field | Description |
 |-------|-------------|
@@ -42,40 +33,31 @@ Create a **DataGrout API** credential:
 | **Server ID** | Your server's UUID (from `gateway.datagrout.ai/servers/{uuid}`). |
 | **Gateway Base URL** | Defaults to `https://gateway.datagrout.ai`. |
 
-The credential test runs a minimal MCP `initialize` round-trip against your server.
+The credential test runs a real MCP `initialize` round-trip.
 
-## Operations
+## Usage
 
-- **List Tools** — returns each tool's name, description, and input schema
-  (respects the tool filter below).
-- **Execute Tool** — runs a named tool with JSON **Tool Arguments** and returns
-  its result.
+1. Add an **AI Agent** (with a chat model) to a workflow.
+2. Attach **DataGrout MCP** to the agent's **Tool** connector and select the
+   credential.
+3. Choose **Tools to Include**:
+   - **All** — every tool on the server
+   - **Selected** — only the chosen tools
+   - **All Except** — everything except the chosen tools
+4. Chat — the agent sees each DataGrout tool separately and calls them as
+   needed.
 
-## Tool filter — All / Selected / All Except
+The filter is the **permission boundary**: filtered-out tools are never exposed
+to or callable by the agent. With large servers (100+ tools), prefer
+**Selected** to keep the model's context focused.
 
-- **All** — every tool on the server.
-- **Selected** — only the tools you pick.
-- **All Except** — every tool except the ones you pick.
-
-When the node is attached to an AI Agent, this is the **permission boundary** for
-what the agent is allowed to call.
-
-## Use as an AI Agent tool
-
-Attach the **DataGrout** node to the AI Agent's tool connector. The agent reads
-the node description + tool list and supplies the tool name and arguments itself
-(via `$fromAI`). Typical flow: the agent calls **List Tools** to discover names,
-then **Execute Tool**.
-
-**Example:** Chat Trigger → AI Agent (with a chat model) → attach **DataGrout** as
-a tool → *"List the tools on my DataGrout server, then run &lt;tool&gt;."*
+Click **Execute step** on the node to preview the tools it will expose.
 
 ## Resources
 
 - [DataGrout documentation](https://library.datagrout.ai/)
 - [DataGrout authentication guide](https://library.datagrout.ai/authentication)
 - [n8n community nodes documentation](https://docs.n8n.io/integrations/community-nodes/)
-- Repository: https://github.com/DataGrout/n8n-node
 
 ## License
 

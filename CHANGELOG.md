@@ -14,6 +14,30 @@
   AI Agent tool errors are returned to the agent so it can correct itself.
 
 
+## [0.2.0] - 2026-07-29
+
+The package is now the **DataGrout MCP** AI Agent tool sub-node.
+
+### Changed
+- **The node is now an AI Agent tool sub-node** (like the built-in vendor MCP
+  entries): it lists the DataGrout server's tools at attach time and exposes
+  **each tool as a separate agent tool** — no Operation selector. Configuration
+  is just the credential and **Tools to Include** (All / Selected / All Except),
+  which acts as the agent's permission boundary.
+- Execute step lists the exposed tools (respects the filter).
+- Keeps: background-task collection, lean responses, session reuse, timeout.
+
+### Removed
+- The List Tools / Execute Tool operations UI (replaced by dynamic tool
+  exposure).
+
+### Notes
+- This version ships runtime dependencies (`@langchain/core`, `zod`,
+  `@n8n/json-schema-to-zod`) and is therefore **not eligible for n8n
+  verification / Cloud listing** — self-hosted installs by name
+  (`N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true`). v0.1.4 remains the last
+  verification-eligible release.
+
 ## [0.1.4] - 2026-07-29
 
 - Session-retry errors are now wrapped in `NodeApiError` instead of re-thrown
