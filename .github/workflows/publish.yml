@@ -1,7 +1,10 @@
 # Publishes this n8n community node to public npm with provenance on tag push.
-# Tag format: <version>, e.g. 0.3.0 (must match package.json version).
-# Tags up to 0.2.0 used the monorepo form n8n-nodes-datagrout@<version>; both
-# are accepted so the older tags keep resolving.
+# Tag format: v<version> or <version>, e.g. v0.3.0 or 0.3.0. The version part
+# must match package.json. Tags up to 0.2.0 used the monorepo form
+# n8n-nodes-datagrout@<version>; all three are accepted.
+#
+# GitHub matches these globs against the tag literally, so a prefix that is not
+# listed here means the workflow simply never runs — no error, no run.
 name: Publish package
 
 on:
@@ -9,6 +12,8 @@ on:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
       - '[0-9]+.[0-9]+.[0-9]+-*'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
       - 'n8n-nodes-datagrout@*'
   workflow_dispatch:
 
