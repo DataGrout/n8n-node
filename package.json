@@ -1,7 +1,7 @@
 {
     "name": "@datagrout/n8n-nodes-datagrout",
-    "version": "0.2.0",
-    "description": "Connect n8n AI Agents to your DataGrout MCP servers — every server tool becomes a separate agent tool",
+    "version": "0.3.0",
+    "description": "List and call your DataGrout MCP server tools from n8n workflows and AI Agents",
     "license": "MIT",
     "homepage": "https://github.com/DataGrout/n8n-node",
     "keywords": [
@@ -49,10 +49,5 @@
     },
     "peerDependencies": {
         "n8n-workflow": "*"
-    },
-    "dependencies": {
-        "@langchain/core": "1.2.0",
-        "@n8n/json-schema-to-zod": "^1.12.0",
-        "zod": "3.25.67"
     }
 }

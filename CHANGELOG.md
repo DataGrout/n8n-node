@@ -1,18 +1,75 @@
-## Unreleased
+## [0.3.0] - 2026-08-11
 
-- Long-running DataGrout calls are now handled automatically: when the server
-  moves a slow request to a background task, the node waits and returns the
-  finished result. Configurable via **Wait for Background Tasks (Ms)**
-  (default 120000; set 0 to get the task reference back immediately).
-- **Lean Responses** (on by default): large result sets come back as a short
-  preview plus a server-side reference you can pass to DataGrout's compute
-  tools, instead of thousands of rows flooding the workflow or agent context.
-- Faster tool calls: the connection to your DataGrout server is now reused
-  between calls instead of re-established every time.
-- The **Timeout (Ms)** option is now applied to requests.
-- Clearer errors: invalid JSON in **Tool Arguments** says so directly, and
-  AI Agent tool errors are returned to the agent so it can correct itself.
+Rebuilt on n8n's native tool primitives so the package qualifies for n8n
+verification and Cloud, and **has no runtime dependencies**.
+**This is a breaking change** — see Migrating below.
 
+### Changed
+- **The node is now a regular action node marked `usableAsTool`**, instead of an
+  AI Agent tool sub-node built on LangChain. It has normal Main input and output,
+  so it works in plain workflows *and* on an agent's Tool connector, with n8n
+  itself doing the tool wrapping.
+- **Tools to Allow** replaces the old Tools to Include filter as the permission
+  boundary:
+  - **All** (default) — any tool on the server can be called
+  - **Selected** — a multi-select allow-list; a tool outside it is refused, not
+    called, even if the model asks for it
+  - **Single Tool** — pin the node to exactly one tool you choose
+- Tool results now return the MCP `structuredContent` as node JSON when the
+  server provides it, so workflows can map over real fields.
+
+### Added
+- **List Tools** operation — returns every allowed tool with its name,
+  description, and input schema, so an agent can discover what exists before
+  calling anything.
+- In **All** and **Selected** modes, **Tool Name** and **Tool Arguments** ship
+  pre-filled with `$fromAI()`, so an agent can call any allowed tool with no
+  extra setup. **Single Tool** mode exposes nothing for the model to fill.
+- A model-supplied tool name is resolved against the server's real tool list
+  before anything is called. An unknown name returns the available tools — with
+  descriptions — as data, so the model can retry with a correct one instead of
+  the call failing. Names are matched even when they carry more or less
+  qualification than the server's listing, so both `discovery.plan` and
+  `data-grout@1/discovery_perform@1` resolve against however the server lists
+  them. Ambiguous names are refused with the list rather than guessed at.
+- The tool list is cached for 5 minutes per credential, so validating a name
+  costs nothing after the first call.
+
+### Removed
+- Runtime dependencies `@langchain/core`, `@n8n/json-schema-to-zod`, and `zod`.
+  `n8n-workflow` is a peer dependency and the only import that remains.
+- The runtime `StructuredToolkit` resolution that reached into the host n8n
+  install via `fs` and `module`. n8n Cloud's sandbox forbids both imports.
+
+### Kept
+- Background-task collection: when DataGrout moves a slow request to a
+  background task, the node waits and returns the finished result.
+- Lean responses: `discovery.plan` / `discovery.perform` get response-shaping
+  defaults so large result sets come back as a preview plus a server-side
+  reference instead of flooding the context.
+- Session reuse: one MCP session per credential, shared across calls, with a
+  single fresh retry when the gateway drops it.
+- Invalid JSON in **Tool Arguments** reports that directly, and failures in the
+  model-driven modes are returned to the model so it can correct itself.
+
+### Migrating from 0.2.0
+A 0.2.0 **DataGrout MCP** node was an AI Agent sub-node that exposed every
+server tool as a separate agent tool. This version is a regular node with Main
+input and output, so **existing 0.2.0 nodes must be replaced, not upgraded**.
+
+Add a **DataGrout MCP** node, leave **Tools to Allow** on **All**, and connect it
+to the agent's Tool connector — the model picks the tool at call time. Add a
+second node set to **List Tools** so it can discover what is available. Rename
+each node after what it does: n8n derives the agent-facing tool name from the
+node's name on the canvas.
+
+### Note on exposing every tool as a separate agent tool
+n8n only fans a single connection out into N separate agent tools when the value
+is an instance of `StructuredToolkit`, a class that lives inside `n8n-core` and
+extends LangChain's `BaseToolkit`. Community packages cannot construct it without
+importing `n8n-core` or reaching for `fs`/`module` — all disallowed on n8n Cloud.
+n8n's own **MCP Client Tool** node does exactly that fan-out and works with
+DataGrout today (HTTP Streamable transport + Bearer auth); see the README.
 
 ## [0.2.0] - 2026-07-29
 

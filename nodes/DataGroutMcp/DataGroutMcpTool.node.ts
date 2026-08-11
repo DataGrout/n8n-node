@@ -1,7 +1,3 @@
-import { DynamicStructuredTool } from '@langchain/core/tools';
-import { jsonSchemaToZod } from '@n8n/json-schema-to-zod';
-import { realpathSync } from 'fs';
-import { createRequire } from 'module';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -10,22 +6,19 @@ import type {
 	INodePropertyOptions,
 	INodeType,
 	INodeTypeDescription,
-	ISupplyDataFunctions,
-	SupplyData,
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError, OperationalError, sleep } from 'n8n-workflow';
-import { z } from 'zod';
 
 // ────────────────────────────────────────────────────────────────────
-// Minimal MCP client over Streamable HTTP (same protocol implementation
-// as @datagrout/n8n-nodes-datagrout, widened to ISupplyDataFunctions).
+// Minimal MCP client over Streamable HTTP, built on n8n's own
+// `helpers.httpRequest` so the node carries no runtime dependencies.
 // ────────────────────────────────────────────────────────────────────
 
 const PROTOCOL_VERSION = '2025-06-18';
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_TASK_WAIT_MS = 120_000;
 
-type Ctx = IExecuteFunctions | ILoadOptionsFunctions | ISupplyDataFunctions;
+type Ctx = IExecuteFunctions | ILoadOptionsFunctions;
 
 function parsePossiblySse(raw: unknown): IDataObject {
 	if (typeof raw === 'object' && raw !== null) return raw as IDataObject;
@@ -101,10 +94,10 @@ async function mcpInitialize(ctx: Ctx, timeoutMs: number): Promise<string | unde
 }
 
 // ── Session cache ────────────────────────────────────────────────────
-// One MCP session per credential, reused across agent tool calls in this
-// n8n process. Without it every tool invocation pays 3 round-trips and
-// abandons a gateway session. On failure of a request made with a cached
-// session, the session is dropped and the call retried ONCE fresh.
+// One MCP session per credential, reused across tool calls in this n8n
+// process. Without it every invocation pays 3 round-trips and abandons a
+// gateway session. On failure of a request made with a cached session, the
+// session is dropped and the call retried ONCE fresh.
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const sessionCache = new Map<string, { sessionId: string | undefined; expiresAt: number }>();
 
@@ -165,7 +158,7 @@ async function mcpListTools(ctx: Ctx, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<I
 
 // Long-running DataGrout calls DETACH to a background task and return
 // {status: "detached", task_ref}. Collecting via tasks.wait here means the
-// agent just receives the finished result — no async dance in its context.
+// caller just receives the finished result — no async dance to manage.
 function detachedTaskRef(result: IDataObject): string | undefined {
 	const sc = (result.structuredContent as IDataObject) ?? {};
 	if (sc.status === 'detached' && typeof sc.task_ref === 'string') return sc.task_ref;
@@ -200,9 +193,7 @@ async function collectDetached(
 		// (live-verified 2026-07-23); the discovery.perform wrapper nests it under
 		// .result. Support both.
 		const task =
-			typeof sc.completed !== 'undefined' || sc.task_ref
-				? sc
-				: ((sc.result as IDataObject) ?? {});
+			typeof sc.completed !== 'undefined' || sc.task_ref ? sc : ((sc.result as IDataObject) ?? {});
 
 		if (task.completed === true && typeof task.result === 'object' && task.result !== null) {
 			const payload = task.result as IDataObject;
@@ -218,9 +209,9 @@ async function collectDetached(
 		await sleep(1000);
 	}
 
-	// Budget exhausted: hand the agent a clean, actionable message instead of
-	// the raw detach stub (whose server hint may reference tools the agent
-	// cannot call on a filtered server).
+	// Budget exhausted: hand back a clean, actionable message instead of the
+	// raw detach stub (whose server hint may reference tools the caller cannot
+	// reach on a filtered server).
 	const note =
 		'The operation needs more time and is still running in the background. ' +
 		'Ask again in a moment — the finished work is reused, so the retry is fast.';
@@ -231,9 +222,9 @@ async function collectDetached(
 }
 
 // discovery.plan / discovery.perform accept lean/head response-shaping
-// params that keep oversized result sets out of the agent's context
+// params that keep oversized result sets out of an agent's context
 // (preview + server-side cache_ref instead of every row). Injected only
-// for those tools and only when the agent didn't set them itself.
+// for those tools and only when the caller didn't set them itself.
 function injectLeanDefaults(toolName: string, args: IDataObject): IDataObject {
 	// Servers may list tools under their canonical name
 	// (data-grout@1/discovery.plan@1) or a sanitized form (discovery_plan) —
@@ -248,42 +239,9 @@ function injectLeanDefaults(toolName: string, args: IDataObject): IDataObject {
 	return args;
 }
 
-// ────────────────────────────────────────────────────────────────────
-// Tool conversion helpers
-// ────────────────────────────────────────────────────────────────────
+// ── Result shaping ───────────────────────────────────────────────────
 
-// Loose signature — the converter's inferred type trips TS "excessively deep".
-const convertJsonSchemaToZod = jsonSchemaToZod as unknown as (schema: unknown) => z.ZodTypeAny;
-
-/** Convert an MCP inputSchema (JSON Schema) to a Zod object schema. */
-function toZodSchema(inputSchema: unknown): z.ZodTypeAny {
-	if (!inputSchema || typeof inputSchema !== 'object') return z.object({});
-	try {
-		const raw = convertJsonSchemaToZod(inputSchema);
-		return raw instanceof z.ZodObject ? raw : z.object({ value: raw });
-	} catch {
-		return z.object({});
-	}
-}
-
-/** Make an MCP tool name safe for LLM function names and unique. */
-function sanitizeToolName(name: string, used: Set<string>): string {
-	let base = name
-		.replace(/[^a-zA-Z0-9_-]/g, '_')
-		.replace(/_+/g, '_')
-		.slice(0, 64);
-	if (!base) base = 'tool';
-	let candidate = base;
-	let n = 1;
-	while (used.has(candidate)) {
-		const suffix = `_${n++}`;
-		candidate = base.slice(0, 64 - suffix.length) + suffix;
-	}
-	used.add(candidate);
-	return candidate;
-}
-
-/** Flatten an MCP tool result into a non-empty string for the agent. */
+/** Flatten an MCP tool result into a non-empty string. */
 function formatToolResult(result: IDataObject): string {
 	const content = result.content;
 	if (Array.isArray(content)) {
@@ -303,47 +261,108 @@ function formatToolResult(result: IDataObject): string {
 }
 
 /**
- * n8n's agent only expands a supplyData response into SEPARATE agent tools when
- * it is an instance of n8n-core's `StructuredToolkit` class (checked via
- * `instanceof` in getConnectedTools). That class is not importable by community
- * packages, so we resolve it at runtime from the running n8n installation via
- * the main module's require. Falls back to undefined (single-tool behavior)
- * if n8n's internals change.
+ * Prefer the tool's structuredContent — it is real JSON a workflow can map
+ * over and an agent can read. Fall back to the flattened text blocks.
  */
-type ToolkitCtor = new (tools: unknown[]) => unknown;
-function getStructuredToolkit(): ToolkitCtor | undefined {
-	const entry = require.main?.filename;
-	if (!entry) return undefined;
-	const rootReq = createRequire(entry);
-	const pick = (core: { StructuredToolkit?: ToolkitCtor }) =>
-		typeof core.StructuredToolkit === 'function' ? core.StructuredToolkit : undefined;
-	// pnpm can host MULTIPLE n8n-core instances (different peer hashes). The
-	// `instanceof StructuredToolkit` check we must satisfy lives inside
-	// @n8n/n8n-nodes-langchain (getConnectedTools), so resolve n8n-core the way
-	// THAT package does — resolving from bin/n8n can yield a different class.
-	try {
-		const pkgJson = rootReq.resolve('@n8n/n8n-nodes-langchain/package.json');
-		const toolkit = pick(createRequire(pkgJson)('n8n-core'));
-		if (toolkit) return toolkit;
-	} catch {
-		// fall through to the next resolution strategy
+function toOutputJson(result: IDataObject): IDataObject {
+	const structured = result.structuredContent;
+	if (structured && typeof structured === 'object' && !Array.isArray(structured)) {
+		return structured as IDataObject;
 	}
+	return { result: formatToolResult(result) };
+}
+
+/** The Arguments field arrives as a JSON string when typed, or an object via expression. */
+function parseArguments(ctx: IExecuteFunctions, raw: unknown, itemIndex: number): IDataObject {
+	if (raw === undefined || raw === null || raw === '') return {};
+	if (typeof raw === 'object') return raw as IDataObject;
+	let parsed: unknown;
 	try {
-		const link = rootReq
-			.resolve('n8n-workflow')
-			.replace(/n8n-workflow.*$/, '') // a node_modules root n8n can see
-			.concat('@n8n/n8n-nodes-langchain');
-		const real = realpathSync(link);
-		const toolkit = pick(createRequire(`${real}/index.js`)('n8n-core'));
-		if (toolkit) return toolkit;
+		parsed = JSON.parse(String(raw));
 	} catch {
-		// fall through to the next resolution strategy
+		throw new NodeOperationError(ctx.getNode(), 'Tool Arguments must be valid JSON', { itemIndex });
 	}
-	try {
-		return pick(rootReq('n8n-core'));
-	} catch {
-		return undefined;
+	if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+		throw new NodeOperationError(ctx.getNode(), 'Tool Arguments must be a JSON object', {
+			itemIndex,
+		});
 	}
+	return parsed as IDataObject;
+}
+
+// ── Tool-name resolution ─────────────────────────────────────────────
+// A model supplies the tool name as free text, so it may guess a name that
+// does not exist, or write a readable form of one that does. Resolving
+// against the server's real list keeps bad names from ever reaching the
+// gateway, and lets an unmatched name return the catalogue instead of an
+// error the model cannot act on.
+
+const TOOL_LIST_TTL_MS = 5 * 60 * 1000;
+const MAX_LISTED_TOOLS = 50;
+const MAX_DESCRIPTION_CHARS = 240;
+
+type ToolSummary = { name: string; description: string };
+const toolListCache = new Map<string, { tools: ToolSummary[]; expiresAt: number }>();
+
+async function cachedTools(ctx: Ctx): Promise<ToolSummary[]> {
+	const key = await sessionKey(ctx);
+	const cached = toolListCache.get(key);
+	if (cached && cached.expiresAt > Date.now()) return cached.tools;
+	const tools = (await mcpListTools(ctx))
+		.map((t) => ({
+			name: (t.name as string) ?? '',
+			description: (t.description as string) ?? '',
+		}))
+		.filter((t) => Boolean(t.name));
+	toolListCache.set(key, { tools, expiresAt: Date.now() + TOOL_LIST_TTL_MS });
+	return tools;
+}
+
+/**
+ * The catalogue handed back to a model that asked for an unknown tool. Carries
+ * descriptions — several DataGrout tools take another tool's fully-qualified
+ * name as an argument, which a bare list of names gives no way to discover.
+ * Bounded so a large server cannot flood the model's context.
+ */
+function describeTools(tools: ToolSummary[]): IDataObject[] {
+	return tools.slice(0, MAX_LISTED_TOOLS).map((t) => ({
+		name: t.name,
+		description:
+			t.description.length > MAX_DESCRIPTION_CHARS
+				? `${t.description.slice(0, MAX_DESCRIPTION_CHARS)}…`
+				: t.description,
+	}));
+}
+
+const normalizeToolName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Map a requested name onto a real one: exact, then punctuation-insensitive,
+ * then an unambiguous partial in EITHER direction. A model may write less
+ * qualification than the server lists (`discovery.plan` for
+ * `data-grout@1/discovery.plan@1`) or more (`data-grout@1/discovery_perform@1`
+ * when the server lists the sanitized `discovery_perform`) — both are seen live.
+ * Ambiguous matches resolve to nothing, so the caller sees the list rather than
+ * a silently wrong tool being run.
+ */
+function resolveToolName(requested: string, available: string[]): string | undefined {
+	if (available.includes(requested)) return requested;
+	const target = normalizeToolName(requested);
+	if (!target) return undefined;
+	const exact = available.filter((n) => normalizeToolName(n) === target);
+	if (exact.length === 1) return exact[0];
+	if (target.length < 4) return undefined;
+	const partial = available.filter((n) => {
+		const candidate = normalizeToolName(n);
+		return candidate.length >= 4 && (candidate.includes(target) || target.includes(candidate));
+	});
+	return partial.length === 1 ? partial[0] : undefined;
+}
+
+/** Read the error text out of an MCP result flagged isError. */
+function errorText(result: IDataObject): string {
+	const content = (result.content as IDataObject[]) ?? [];
+	return (content.find((c) => c.type === 'text')?.text as string) ?? 'Tool returned an error';
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -355,69 +374,124 @@ export class DataGroutMcpTool implements INodeType {
 		icon: { light: 'file:datagrout.svg', dark: 'file:datagrout.dark.svg' },
 		group: ['output'],
 		version: 1,
-		subtitle: '={{"Tools: " + $parameter["toolsToInclude"]}}',
-		description:
-			"Give an AI Agent access to every tool on a DataGrout MCP server — each server tool appears as a separate agent tool",
+		subtitle:
+			'={{$parameter["operation"] === "listTools" ? "List Tools" : ($parameter["toolSelection"] === "single" ? $parameter["tool"] : "Execute Tool")}}',
+		description: 'List and call the tools on a DataGrout MCP server',
 		defaults: { name: 'DataGrout MCP' },
+		usableAsTool: true,
 		codex: {
 			categories: ['AI'],
-			subcategories: { AI: ['Model Context Protocol', 'Tools'] },
 			alias: ['MCP', 'Model Context Protocol', 'DataGrout'],
 			resources: {
 				primaryDocumentation: [{ url: 'https://library.datagrout.ai/' }],
 			},
 		},
-		inputs: [],
-		outputs: [{ type: NodeConnectionTypes.AiTool, displayName: 'Tools' }],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [{ name: 'dataGroutApi', required: true }],
 		properties: [
 			{
-				displayName: 'Tools to Include',
-				name: 'toolsToInclude',
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				options: [
+					{
+						name: 'Execute Tool',
+						value: 'executeTool',
+						description: 'Call a tool on the DataGrout server',
+						action: 'Execute a tool',
+					},
+					{
+						name: 'List Tools',
+						value: 'listTools',
+						description: 'List every tool the DataGrout server exposes, with its input schema',
+						action: 'List tools',
+					},
+				],
+				default: 'executeTool',
+			},
+			{
+				displayName: 'Tools to Allow',
+				name: 'toolSelection',
 				type: 'options',
 				noDataExpression: true,
 				options: [
 					{
 						name: 'All',
 						value: 'all',
-						description: 'Expose every tool on this DataGrout server',
-					},
-					{
-						name: 'All Except',
-						value: 'except',
-						description: 'Expose every tool except those chosen below',
+						description: 'Any tool on the server can be called',
 					},
 					{
 						name: 'Selected',
 						value: 'selected',
-						description: 'Expose only the tools chosen below',
+						description: 'Only the tools chosen below can be called',
+					},
+					{
+						name: 'Single Tool',
+						value: 'single',
+						description: 'Pin this node to exactly one tool you choose',
 					},
 				],
 				default: 'all',
 				description:
-					'The permission boundary for what the connected AI Agent is allowed to call',
+					'The permission boundary for this node. With All or Selected, the model supplies the tool name at call time; with Single Tool you pick it yourself.',
 			},
 			{
-				displayName: 'Tool Names or IDs',
+				displayName: 'Allowed Tool Names or IDs',
 				name: 'includeTools',
 				type: 'multiOptions',
 				typeOptions: { loadOptionsMethod: 'getTools' },
 				default: [],
 				required: true,
-				displayOptions: { show: { toolsToInclude: ['selected'] } },
+				displayOptions: { show: { toolSelection: ['selected'] } },
 				description:
-					'Only these tools will be available. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+					'Only these tools can be called; anything else is refused. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
-				displayName: 'Excluded Tool Names or IDs',
-				name: 'excludeTools',
-				type: 'multiOptions',
+				displayName: 'Tool Name or ID',
+				name: 'tool',
+				type: 'options',
 				typeOptions: { loadOptionsMethod: 'getTools' },
-				default: [],
+				default: '',
 				required: true,
-				displayOptions: { show: { toolsToInclude: ['except'] } },
+				displayOptions: { show: { toolSelection: ['single'], operation: ['executeTool'] } },
 				description:
-					'All tools except these will be available. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+					'The one tool this node calls. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+			},
+			{
+				displayName: 'Tool Arguments',
+				name: 'toolArguments',
+				type: 'json',
+				default: '{}',
+				displayOptions: { show: { toolSelection: ['single'], operation: ['executeTool'] } },
+				description:
+					'Arguments for the tool, as a JSON object matching its input schema',
+			},
+			// All / Selected are the model-driven modes: these two default to
+			// $fromAI() so an agent can reach every allowed tool with no extra
+			// setup. n8n collects the tool schema by scanning stored parameter
+			// values for $fromAI() calls, so the defaults are what wire it up.
+			{
+				displayName: 'Tool Name',
+				name: 'modelToolName',
+				type: 'string',
+				default:
+					"={{ $fromAI('tool_name', 'Name of the DataGrout tool to call. If you do not know the available names, call with an empty string and the response will list them.', 'string') }}",
+				required: true,
+				displayOptions: { show: { toolSelection: ['all', 'selected'], operation: ['executeTool'] } },
+				description:
+					'The tool to call. Left as-is, the model chooses it at call time — an unknown name returns the list of available tools rather than failing, so it can correct itself.',
+			},
+			{
+				displayName: 'Tool Arguments',
+				name: 'modelToolArguments',
+				type: 'json',
+				default:
+					"={{ $fromAI('tool_arguments', 'A JSON object of arguments matching the chosen tool input schema', 'json') }}",
+				displayOptions: { show: { toolSelection: ['all', 'selected'], operation: ['executeTool'] } },
+				description:
+					'Arguments for the tool. Left as-is, the model fills these in at call time.',
 			},
 		],
 	};
@@ -435,126 +509,140 @@ export class DataGroutMcpTool implements INodeType {
 		},
 	};
 
-	async supplyData(this: ISupplyDataFunctions, itemIndex: number): Promise<SupplyData> {
-		const mode = this.getNodeParameter('toolsToInclude', itemIndex, 'all') as string;
-		const includeTools = this.getNodeParameter('includeTools', itemIndex, []) as string[];
-		const excludeTools = this.getNodeParameter('excludeTools', itemIndex, []) as string[];
-
-		const allTools = await mcpListTools(this);
-		const selected = allTools.filter((t) => {
-			const name = t.name as string;
-			if (mode === 'selected') return includeTools.includes(name);
-			if (mode === 'except') return !excludeTools.includes(name);
-			return true;
-		});
-
-		const used = new Set<string>();
-		const tools = selected.map((mcpTool) => {
-			const realName = mcpTool.name as string;
-			const safeName = sanitizeToolName(realName, used);
-			return new DynamicStructuredTool({
-				name: safeName,
-				description: (mcpTool.description as string) ?? realName,
-				schema: toZodSchema(mcpTool.inputSchema),
-				metadata: { isFromToolkit: true },
-				func: async (args: Record<string, unknown>) => {
-					try {
-						const callArgs = injectLeanDefaults(realName, (args ?? {}) as IDataObject);
-
-						const result = await withSession(this, DEFAULT_TIMEOUT_MS, async (sessionId) => {
-							const { result: callResult } = await mcpRequest(
-								this,
-								{
-									jsonrpc: '2.0',
-									id: 3,
-									method: 'tools/call',
-									params: { name: realName, arguments: callArgs },
-								},
-								sessionId,
-								DEFAULT_TIMEOUT_MS,
-							);
-
-							// Transparent background-task collection: long DataGrout
-							// calls detach; poll tasks.wait so the agent receives the
-							// finished result instead of a task stub it must manage.
-							const taskRef = detachedTaskRef(callResult);
-							if (taskRef) {
-								const collected = await collectDetached(
-									this,
-									sessionId,
-									taskRef,
-									DEFAULT_TASK_WAIT_MS,
-									DEFAULT_TIMEOUT_MS,
-								);
-								if (collected) return collected;
-							}
-							return callResult;
-						});
-
-						if (result.isError) {
-							const content = (result.content as IDataObject[]) ?? [];
-							const message =
-								(content.find((c) => c.type === 'text')?.text as string) ??
-								'Tool returned an error';
-							// Return the error TEXT so the agent can read it and
-							// self-correct — throwing aborts the whole agent step.
-							return `Error: ${message}`;
-						}
-						return formatToolResult(result);
-					} catch (error) {
-						return `Error: ${(error as Error).message}`;
-					}
-				},
-			});
-		});
-
-		const StructuredToolkit = getStructuredToolkit();
-		this.logger.info(
-			`[DataGrout MCP] tools listed=${allTools.length} exposed=${tools.length} toolkit=${
-				StructuredToolkit ? 'resolved' : 'UNRESOLVED (fallback)'
-			}`,
-		);
-		if (StructuredToolkit) {
-			// Expands into one agent tool per MCP tool (the Atlassian-MCP experience).
-			return { response: new StructuredToolkit(tools) };
-		}
-		// Fallback if n8n-core is unreachable: n8n treats the array as-is.
-		return { response: tools };
-	}
-
-	/** Makes the node's "Execute step" button work: lists the exposed tools. */
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
+		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
-		try {
-			const mode = this.getNodeParameter('toolsToInclude', 0, 'all') as string;
-			const includeTools = this.getNodeParameter('includeTools', 0, []) as string[];
-			const excludeTools = this.getNodeParameter('excludeTools', 0, []) as string[];
+		// `isToolExecution()` is NOT usable here: n8n's ExecuteContext hardcodes it
+		// to `false`, and a usableAsTool node runs execute() through exactly that
+		// context (only SupplyDataContext ever returns true). The All and Selected
+		// modes are the model-driven ones by definition, so use the mode itself to
+		// decide: hand failures back as data there so the model can read them and
+		// retry, and throw in Single Tool mode where a workflow expects a failure.
+		const softFail = (this.getNodeParameter('toolSelection', 0, 'all') as string) !== 'single';
 
-			const allTools = await mcpListTools(this);
-			const selected = allTools.filter((t) => {
-				const name = t.name as string;
-				if (mode === 'selected') return includeTools.includes(name);
-				if (mode === 'except') return !excludeTools.includes(name);
-				return true;
-			});
+		for (let i = 0; i < items.length; i++) {
+			try {
+				const operation = this.getNodeParameter('operation', i, 'executeTool') as string;
+				const selection = this.getNodeParameter('toolSelection', i, 'all') as string;
+				const allowList =
+					selection === 'selected'
+						? (this.getNodeParameter('includeTools', i, []) as string[])
+						: [];
 
-			for (const t of selected) {
-				returnData.push({
-					json: {
-						name: t.name,
-						description: t.description ?? '',
-						inputSchema: t.inputSchema ?? {},
-					},
-					pairedItem: { item: 0 },
+				// Discovery: hands an agent every allowed tool name + input schema in
+				// one call, so one Execute Tool node can then reach any of them.
+				if (operation === 'listTools') {
+					const pinned =
+						selection === 'single' ? (this.getNodeParameter('tool', i, '') as string) : '';
+					for (const t of await mcpListTools(this)) {
+						const name = (t.name as string) ?? '';
+						if (selection === 'selected' && !allowList.includes(name)) continue;
+						if (selection === 'single' && name !== pinned) continue;
+						returnData.push({
+							json: { name, description: t.description ?? '', inputSchema: t.inputSchema ?? {} },
+							pairedItem: { item: i },
+						});
+					}
+					continue;
+				}
+
+				const requested = (
+					selection === 'single'
+						? (this.getNodeParameter('tool', i) as string)
+						: String(this.getNodeParameter('modelToolName', i, '') ?? '')
+				).trim();
+
+				let toolName = requested;
+
+				// In the model-driven modes the name is free text, so resolve it
+				// against what the server actually exposes (bounded by the allow-list,
+				// which is the permission boundary). An unresolved name never reaches
+				// the gateway — the model gets the catalogue back and can retry.
+				if (selection !== 'single') {
+					const available = await cachedTools(this);
+					const permitted =
+						selection === 'selected'
+							? available.filter((t) => allowList.includes(t.name))
+							: available;
+					const resolved = requested
+						? resolveToolName(
+								requested,
+								permitted.map((t) => t.name),
+							)
+						: undefined;
+
+					if (!resolved) {
+						const json: IDataObject = {
+							error: requested
+								? `The tool "${requested}" is not available on this node. Call one of the tools in availableTools, using its name exactly.`
+								: 'No tool name was provided. Call one of the tools in availableTools, using its name exactly.',
+							availableTools: describeTools(permitted),
+						};
+						if (permitted.length > MAX_LISTED_TOOLS) {
+							json.note = `Showing ${MAX_LISTED_TOOLS} of ${permitted.length} tools.`;
+						}
+						returnData.push({ json, pairedItem: { item: i } });
+						continue;
+					}
+					toolName = resolved;
+				} else if (!toolName) {
+					throw new NodeOperationError(this.getNode(), 'No tool was selected', { itemIndex: i });
+				}
+				const callArgs = injectLeanDefaults(
+					toolName,
+					parseArguments(
+						this,
+						selection === 'single'
+							? this.getNodeParameter('toolArguments', i, '{}')
+							: this.getNodeParameter('modelToolArguments', i, '{}'),
+						i,
+					),
+				);
+
+				const result = await withSession(this, DEFAULT_TIMEOUT_MS, async (sessionId) => {
+					const { result: callResult } = await mcpRequest(
+						this,
+						{
+							jsonrpc: '2.0',
+							id: 3,
+							method: 'tools/call',
+							params: { name: toolName, arguments: callArgs },
+						},
+						sessionId,
+						DEFAULT_TIMEOUT_MS,
+					);
+
+					// Transparent background-task collection: long DataGrout calls
+					// detach; poll tasks.wait so the caller receives the finished
+					// result instead of a task stub it must manage.
+					const taskRef = detachedTaskRef(callResult);
+					if (taskRef) {
+						const collected = await collectDetached(
+							this,
+							sessionId,
+							taskRef,
+							DEFAULT_TASK_WAIT_MS,
+							DEFAULT_TIMEOUT_MS,
+						);
+						if (collected) return collected;
+					}
+					return callResult;
 				});
-			}
-		} catch (error) {
-			if (this.continueOnFail()) {
-				returnData.push({ json: { error: (error as Error).message }, pairedItem: { item: 0 } });
-			} else {
-				throw new NodeOperationError(this.getNode(), error as Error, { itemIndex: 0 });
+
+				if (result.isError) {
+					throw new NodeOperationError(this.getNode(), errorText(result), { itemIndex: i });
+				}
+
+				returnData.push({ json: toOutputJson(result), pairedItem: { item: i } });
+			} catch (error) {
+				if (softFail || this.continueOnFail()) {
+					returnData.push({ json: { error: (error as Error).message }, pairedItem: { item: i } });
+					continue;
+				}
+				throw new NodeOperationError(this.getNode(), error as Error, { itemIndex: i });
 			}
 		}
+
 		return [returnData];
 	}
 }
