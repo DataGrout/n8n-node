@@ -1,10 +1,14 @@
 # Publishes this n8n community node to public npm with provenance on tag push.
-# Tag format: n8n-nodes-datagrout@<version> (must match package.json version).
+# Tag format: <version>, e.g. 0.3.0 (must match package.json version).
+# Tags up to 0.2.0 used the monorepo form n8n-nodes-datagrout@<version>; both
+# are accepted so the older tags keep resolving.
 name: Publish package
 
 on:
   push:
     tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
       - 'n8n-nodes-datagrout@*'
   workflow_dispatch:
 
@@ -39,7 +43,9 @@ jobs:
       - name: Verify tag matches package.json version
         if: github.event_name == 'push'
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#*@}"
+          # Accepts 0.3.0, v0.3.0, and the legacy n8n-nodes-datagrout@0.3.0.
+          TAG_VERSION="${GITHUB_REF_NAME##*@}"
+          TAG_VERSION="${TAG_VERSION#v}"
           PKG_VERSION="$(node -p "require('./package.json').version")"
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "Tag version ($TAG_VERSION) != package.json version ($PKG_VERSION)"; exit 1
