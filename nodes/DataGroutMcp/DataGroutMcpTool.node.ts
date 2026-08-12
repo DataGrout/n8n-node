@@ -9,6 +9,19 @@ import type {
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError, OperationalError, sleep } from 'n8n-workflow';
 
+import type { ToolSummary } from './pure';
+import {
+	MAX_LISTED_TOOLS,
+	describeTools,
+	detachedTaskRef,
+	errorText,
+	injectLeanDefaults,
+	parsePossiblySse,
+	resolveToolName,
+	taskRecord,
+	toOutputJson,
+} from './pure';
+
 // ────────────────────────────────────────────────────────────────────
 // Minimal MCP client over Streamable HTTP, built on n8n's own
 // `helpers.httpRequest` so the node carries no runtime dependencies.
@@ -19,18 +32,6 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_TASK_WAIT_MS = 120_000;
 
 type Ctx = IExecuteFunctions | ILoadOptionsFunctions;
-
-function parsePossiblySse(raw: unknown): IDataObject {
-	if (typeof raw === 'object' && raw !== null) return raw as IDataObject;
-	const text = String(raw);
-	const dataLines = text
-		.split('\n')
-		.filter((l) => l.startsWith('data:'))
-		.map((l) => l.slice(5).trim())
-		.filter(Boolean);
-	const payload = dataLines.length ? dataLines[dataLines.length - 1] : text;
-	return JSON.parse(payload) as IDataObject;
-}
 
 async function mcpRequest(
 	ctx: Ctx,
@@ -156,15 +157,6 @@ async function mcpListTools(ctx: Ctx, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<I
 
 // ── DataGrout idioms ─────────────────────────────────────────────────
 
-// Long-running DataGrout calls DETACH to a background task and return
-// {status: "detached", task_ref}. Collecting via tasks.wait here means the
-// caller just receives the finished result — no async dance to manage.
-function detachedTaskRef(result: IDataObject): string | undefined {
-	const sc = (result.structuredContent as IDataObject) ?? {};
-	if (sc.status === 'detached' && typeof sc.task_ref === 'string') return sc.task_ref;
-	return undefined;
-}
-
 async function collectDetached(
 	ctx: Ctx,
 	sessionId: string | undefined,
@@ -188,12 +180,7 @@ async function collectDetached(
 			timeoutMs,
 		);
 
-		const sc = (result.structuredContent as IDataObject) ?? {};
-		// Direct tools/call returns the task record at the TOP of structuredContent
-		// (live-verified 2026-07-23); the discovery.perform wrapper nests it under
-		// .result. Support both.
-		const task =
-			typeof sc.completed !== 'undefined' || sc.task_ref ? sc : ((sc.result as IDataObject) ?? {});
+		const task = taskRecord(result.structuredContent as IDataObject);
 
 		if (task.completed === true && typeof task.result === 'object' && task.result !== null) {
 			const payload = task.result as IDataObject;
@@ -221,57 +208,6 @@ async function collectDetached(
 	};
 }
 
-// discovery.plan / discovery.perform accept lean/head response-shaping
-// params that keep oversized result sets out of an agent's context
-// (preview + server-side cache_ref instead of every row). Injected only
-// for those tools and only when the caller didn't set them itself.
-function injectLeanDefaults(toolName: string, args: IDataObject): IDataObject {
-	// Servers may list tools under their canonical name
-	// (data-grout@1/discovery.plan@1) or a sanitized form (discovery_plan) —
-	// match both (live-observed 2026-07-24: the tools/list of an
-	// intelligent-interface server returns sanitized names).
-	if (/(^|\/)discovery[._](plan|guide)(@\d+)?$/.test(toolName)) {
-		return { lean: true, head: true, ...args };
-	}
-	if (/(^|\/)discovery[._]perform(@\d+)?$/.test(toolName)) {
-		return { head: true, ...args };
-	}
-	return args;
-}
-
-// ── Result shaping ───────────────────────────────────────────────────
-
-/** Flatten an MCP tool result into a non-empty string. */
-function formatToolResult(result: IDataObject): string {
-	const content = result.content;
-	if (Array.isArray(content)) {
-		const text = content
-			.map((c) => {
-				const block = c as { type?: string; text?: string };
-				return block?.type === 'text' && typeof block.text === 'string'
-					? block.text
-					: JSON.stringify(c);
-			})
-			.join('\n')
-			.trim();
-		if (text.length) return text;
-	}
-	const serialized = JSON.stringify(result);
-	return serialized && serialized !== 'undefined' ? serialized : '(no result)';
-}
-
-/**
- * Prefer the tool's structuredContent — it is real JSON a workflow can map
- * over and an agent can read. Fall back to the flattened text blocks.
- */
-function toOutputJson(result: IDataObject): IDataObject {
-	const structured = result.structuredContent;
-	if (structured && typeof structured === 'object' && !Array.isArray(structured)) {
-		return structured as IDataObject;
-	}
-	return { result: formatToolResult(result) };
-}
-
 /** The Arguments field arrives as a JSON string when typed, or an object via expression. */
 function parseArguments(ctx: IExecuteFunctions, raw: unknown, itemIndex: number): IDataObject {
 	if (raw === undefined || raw === null || raw === '') return {};
@@ -297,12 +233,9 @@ function parseArguments(ctx: IExecuteFunctions, raw: unknown, itemIndex: number)
 // gateway, and lets an unmatched name return the catalogue instead of an
 // error the model cannot act on.
 
-const TOOL_LIST_TTL_MS = 5 * 60 * 1000;
-const MAX_LISTED_TOOLS = 50;
-const MAX_DESCRIPTION_CHARS = 240;
-
-type ToolSummary = { name: string; description: string };
 const toolListCache = new Map<string, { tools: ToolSummary[]; expiresAt: number }>();
+
+const TOOL_LIST_TTL_MS = 5 * 60 * 1000;
 
 async function cachedTools(ctx: Ctx): Promise<ToolSummary[]> {
 	const key = await sessionKey(ctx);
@@ -316,53 +249,6 @@ async function cachedTools(ctx: Ctx): Promise<ToolSummary[]> {
 		.filter((t) => Boolean(t.name));
 	toolListCache.set(key, { tools, expiresAt: Date.now() + TOOL_LIST_TTL_MS });
 	return tools;
-}
-
-/**
- * The catalogue handed back to a model that asked for an unknown tool. Carries
- * descriptions — several DataGrout tools take another tool's fully-qualified
- * name as an argument, which a bare list of names gives no way to discover.
- * Bounded so a large server cannot flood the model's context.
- */
-function describeTools(tools: ToolSummary[]): IDataObject[] {
-	return tools.slice(0, MAX_LISTED_TOOLS).map((t) => ({
-		name: t.name,
-		description:
-			t.description.length > MAX_DESCRIPTION_CHARS
-				? `${t.description.slice(0, MAX_DESCRIPTION_CHARS)}…`
-				: t.description,
-	}));
-}
-
-const normalizeToolName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-/**
- * Map a requested name onto a real one: exact, then punctuation-insensitive,
- * then an unambiguous partial in EITHER direction. A model may write less
- * qualification than the server lists (`discovery.plan` for
- * `data-grout@1/discovery.plan@1`) or more (`data-grout@1/discovery_perform@1`
- * when the server lists the sanitized `discovery_perform`) — both are seen live.
- * Ambiguous matches resolve to nothing, so the caller sees the list rather than
- * a silently wrong tool being run.
- */
-function resolveToolName(requested: string, available: string[]): string | undefined {
-	if (available.includes(requested)) return requested;
-	const target = normalizeToolName(requested);
-	if (!target) return undefined;
-	const exact = available.filter((n) => normalizeToolName(n) === target);
-	if (exact.length === 1) return exact[0];
-	if (target.length < 4) return undefined;
-	const partial = available.filter((n) => {
-		const candidate = normalizeToolName(n);
-		return candidate.length >= 4 && (candidate.includes(target) || target.includes(candidate));
-	});
-	return partial.length === 1 ? partial[0] : undefined;
-}
-
-/** Read the error text out of an MCP result flagged isError. */
-function errorText(result: IDataObject): string {
-	const content = (result.content as IDataObject[]) ?? [];
-	return (content.find((c) => c.type === 'text')?.text as string) ?? 'Tool returned an error';
 }
 
 // ────────────────────────────────────────────────────────────────────

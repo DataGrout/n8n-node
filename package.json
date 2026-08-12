@@ -24,7 +24,8 @@
         "dev": "n8n-node dev",
         "lint": "n8n-node lint",
         "lint:fix": "n8n-node lint --fix",
-        "prepublishOnly": "npm run build && npm run lint"
+        "prepublishOnly": "npm test && npm run build && npm run lint",
+        "test": "node --test --experimental-strip-types test/*.test.ts"
     },
     "files": [
         "dist"
