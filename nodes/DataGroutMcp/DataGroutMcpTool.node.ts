@@ -33,19 +33,27 @@ const DEFAULT_TASK_WAIT_MS = 120_000;
 
 type Ctx = IExecuteFunctions | ILoadOptionsFunctions;
 
+const CREDENTIAL = 'dataGroutOAuth2Api';
+
+/** The gateway endpoint this credential connects to. */
+async function gatewayUrl(ctx: Ctx): Promise<string> {
+	const credentials = await ctx.getCredentials(CREDENTIAL);
+	return String(credentials.serverUrl ?? 'https://gateway.datagrout.ai/connect').replace(/\/$/, '');
+}
+
 async function mcpRequest(
 	ctx: Ctx,
 	body: IDataObject,
 	sessionId?: string,
 	timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ result: IDataObject; sessionId?: string }> {
-	const credentials = await ctx.getCredentials('dataGroutApi');
-	const baseUrl = String(credentials.baseUrl ?? 'https://gateway.datagrout.ai').replace(/\/$/, '');
-	const response = await ctx.helpers.httpRequest({
+	// Going through httpRequestWithAuthentication is what lets n8n inject the
+	// Authorization header and refresh an expired access token. Reading the
+	// token ourselves would skip the refresh and start failing with 401.
+	const response = await ctx.helpers.httpRequestWithAuthentication.call(ctx, CREDENTIAL, {
 		method: 'POST',
-		url: `${baseUrl}/servers/${credentials.serverId as string}/mcp`,
+		url: await gatewayUrl(ctx),
 		headers: {
-			Authorization: `Bearer ${credentials.apiToken as string}`,
 			'Content-Type': 'application/json',
 			Accept: 'application/json, text/event-stream',
 			...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
@@ -103,10 +111,12 @@ const SESSION_TTL_MS = 10 * 60 * 1000;
 const sessionCache = new Map<string, { sessionId: string | undefined; expiresAt: number }>();
 
 async function sessionKey(ctx: Ctx): Promise<string> {
-	const credentials = await ctx.getCredentials('dataGroutApi');
-	return `${credentials.baseUrl as string}|${credentials.serverId as string}|${(
-		credentials.apiToken as string
-	).slice(-8)}`;
+	// Everyone shares one endpoint now, so the connected account is what makes a
+	// session distinct.
+	const credentials = await ctx.getCredentials(CREDENTIAL);
+	const url = String(credentials.serverUrl ?? 'https://gateway.datagrout.ai/connect');
+	const token = (credentials.oauthTokenData as IDataObject | undefined)?.access_token;
+	return `${url}|${typeof token === 'string' ? token.slice(-8) : 'unlinked'}`;
 }
 
 async function withSession<T>(
@@ -274,7 +284,7 @@ export class DataGroutMcpTool implements INodeType {
 		},
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
-		credentials: [{ name: 'dataGroutApi', required: true }],
+		credentials: [{ name: 'dataGroutOAuth2Api', required: true }],
 		properties: [
 			{
 				displayName: 'Operation',

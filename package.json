@@ -1,6 +1,6 @@
 {
     "name": "@datagrout/n8n-nodes-datagrout",
-    "version": "0.3.0",
+    "version": "0.3.1",
     "description": "List and call your DataGrout MCP server tools from n8n workflows and AI Agents",
     "license": "MIT",
     "homepage": "https://github.com/DataGrout/n8n-node",
@@ -34,7 +34,7 @@
         "n8nNodesApiVersion": 1,
         "strict": false,
         "credentials": [
-            "dist/credentials/DataGroutApi.credentials.js"
+            "dist/credentials/DataGroutOAuth2Api.credentials.js"
         ],
         "nodes": [
             "dist/nodes/DataGroutMcp/DataGroutMcpTool.node.js"

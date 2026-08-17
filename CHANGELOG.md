@@ -1,3 +1,27 @@
+## [0.3.1] - 2026-08-17
+
+The gateway now serves every account from one global endpoint, and connecting is
+a single click.
+
+### Changed
+- **Authentication is OAuth2 only.** Create the DataGrout OAuth2 API credential
+  and click "Connect my account" — there are no fields to fill in. DataGrout
+  registers OAuth clients dynamically, so there is no client ID or secret, and
+  n8n refreshes the access token when it expires.
+- The node connects to a single global gateway endpoint, so there is nothing
+  per-account to configure.
+- Requests go through n8n's authenticated HTTP helper rather than setting the
+  Authorization header directly, which is what lets n8n refresh the token.
+
+### Removed
+- **The API token credential.** Your connected account identifies the server, so
+  the credential has no fields at all.
+
+### Migrating from 0.3.0
+Create a **DataGrout OAuth2 API** credential, connect your account, and select it
+on each DataGrout MCP node in place of the old API credential. Workflow logic
+needs no changes.
+
 ## [0.3.0] - 2026-08-11
 
 Rebuilt on n8n's native tool primitives so the package qualifies for n8n

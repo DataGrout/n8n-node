@@ -27,15 +27,16 @@ This package has **no runtime dependencies**.
 To use the node on an AI Agent's Tool connector on a self-hosted instance, set
 `N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true` and restart n8n.
 
-## Credentials — DataGrout API
+## Credentials — DataGrout OAuth2 API
 
-| Field | Description |
-|-------|-------------|
-| **API Token** | Generate it in your DataGrout dashboard. |
-| **Server ID** | Your server's UUID (from `gateway.datagrout.ai/servers/{uuid}`). |
-| **Gateway Base URL** | Defaults to `https://gateway.datagrout.ai`. |
+Create the credential and click **Connect my account**. That is the whole setup:
+there is nothing to fill in.
 
-The credential test runs a real MCP `initialize` round-trip.
+No client ID or secret, because DataGrout registers OAuth clients dynamically
+and n8n discovers the authorization server and registers itself. No server ID or
+URL, because every account is served from one gateway endpoint. n8n also
+refreshes the access token when it expires, so long-running workflows keep
+working.
 
 ## Operations
 
@@ -93,7 +94,7 @@ Use n8n's built-in **MCP Client Tool** node, which exposes each server tool to
 the agent individually:
 
 - **Server Transport**: HTTP Streamable
-- **Endpoint**: `https://gateway.datagrout.ai/servers/{your-server-uuid}/mcp`
+- **Endpoint**: `https://gateway.datagrout.ai/connect`
 - **Authentication**: Bearer, with your DataGrout API token
 
 A community node cannot reproduce that fan-out: n8n only splits one connection
