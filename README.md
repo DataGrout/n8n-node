@@ -31,6 +31,18 @@ Facts stored with **Remember** are still there on the next execution, and on
 other workflows pointed at the same memory. **Recall** answers from stored facts
 and from what follows logically from them, with no model call.
 
+## DataGrout Trigger
+
+A second node starts a workflow when DataGrout pushes an event, over a single
+multiplexed WebSocket — no polling. Give it the **topic** a run publishes to and
+it emits one item per event, with the event name attached.
+
+Connection lifecycle frames are filtered out, so a reconnect does not start your
+workflow. Dropped connections reopen on a backing-off delay.
+
+> Requires n8n on Node 22 or newer (the trigger uses Node's built-in WebSocket
+> so the package stays dependency-free).
+
 ## Installation
 
 **Settings → Community Nodes → Install** → `@datagrout/n8n-nodes-datagrout`.

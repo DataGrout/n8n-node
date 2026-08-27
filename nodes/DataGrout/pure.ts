@@ -174,3 +174,37 @@ export function parseJsonData(raw: unknown): unknown {
 		throw new Error('not valid JSON');
 	}
 }
+
+/**
+ * The event carried by a WebSocket frame, or undefined if the frame is not one
+ * of our subscription's events.
+ *
+ * Three things arrive on the socket: replies to our own calls (an `id`, no
+ * `method`), connection lifecycle notifications such as `session.ready`, and
+ * subscription events. Only the last carries `params.subscription`, so that
+ * field is what separates them — without it the trigger would start a workflow
+ * every time the socket connected (live-caught 2026-08-27).
+ */
+export function subscriptionEvent(
+	frame: IDataObject,
+	subscriptionId?: string,
+): { event: string; data: IDataObject } | undefined {
+	if (frame.method !== 'notification') return undefined;
+
+	const params = (frame.params as IDataObject) ?? {};
+	const subscription = params.subscription;
+	if (typeof subscription !== 'string') return undefined;
+	if (subscriptionId && subscription !== subscriptionId) return undefined;
+
+	return {
+		event: typeof params.event === 'string' ? params.event : 'event',
+		data: (params.data as IDataObject) ?? {},
+	};
+}
+
+/** The subscription id from a reply to our `subscribe` call, if this is one. */
+export function subscribeAck(frame: IDataObject): string | undefined {
+	if (frame.id === undefined || frame.method !== undefined) return undefined;
+	const result = (frame.result as IDataObject) ?? {};
+	return typeof result.subscription === 'string' ? result.subscription : undefined;
+}

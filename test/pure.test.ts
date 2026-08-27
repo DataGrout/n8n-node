@@ -9,6 +9,8 @@ import {
 	parseJsonObject,
 	payloadError,
 	shapeAnswer,
+	subscribeAck,
+	subscriptionEvent,
 	taskRecord,
 	toolPayload,
 	unwrapData,
@@ -268,5 +270,79 @@ describe('shapeAnswer never marks a failure verified', () => {
 		const shaped = shapeAnswer({ error: 'No payload provided', status_code: 400 });
 		assert.equal(shaped.verified, false);
 		assert.equal(shaped.answer, null);
+	});
+});
+
+// Frame shapes captured from the live WebSocket transport 2026-08-27. The
+// lifecycle case matters most: session.ready arrives on every connect, and
+// emitting it would start the workflow whenever the socket reconnected.
+describe('subscriptionEvent', () => {
+	it('emits a subscription event', () => {
+		const frame = {
+			jsonrpc: '2.0',
+			method: 'notification',
+			params: {
+				subscription: 'sub_abc',
+				event: 'run.completed',
+				data: { run_id: 'run_1', status: 'ok' },
+			},
+		};
+		assert.deepEqual(subscriptionEvent(frame), {
+			event: 'run.completed',
+			data: { run_id: 'run_1', status: 'ok' },
+		});
+	});
+
+	it('ignores session.ready, which carries no subscription', () => {
+		const frame = {
+			jsonrpc: '2.0',
+			method: 'notification',
+			params: { event: 'session.ready', data: { session_id: 'ws_1' } },
+		};
+		assert.equal(subscriptionEvent(frame), undefined);
+	});
+
+	it('ignores a reply to our own call', () => {
+		assert.equal(subscriptionEvent({ id: 1, jsonrpc: '2.0', result: {} }), undefined);
+	});
+
+	it('ignores another subscription on the same socket', () => {
+		const frame = {
+			method: 'notification',
+			params: { subscription: 'sub_other', event: 'x', data: {} },
+		};
+		assert.equal(subscriptionEvent(frame, 'sub_ours'), undefined);
+	});
+
+	it('accepts a matching subscription id', () => {
+		const frame = {
+			method: 'notification',
+			params: { subscription: 'sub_ours', event: 'x', data: { a: 1 } },
+		};
+		assert.deepEqual(subscriptionEvent(frame, 'sub_ours'), { event: 'x', data: { a: 1 } });
+	});
+
+	it('names an unnamed event rather than emitting undefined', () => {
+		const frame = { method: 'notification', params: { subscription: 's', data: {} } };
+		assert.equal(subscriptionEvent(frame)?.event, 'event');
+	});
+});
+
+describe('subscribeAck', () => {
+	it('reads the subscription id out of the ack', () => {
+		const frame = {
+			id: 1,
+			jsonrpc: '2.0',
+			result: { topic: 't', subscription: 'sub_abc', scoped_topic: 'ws:x:t' },
+		};
+		assert.equal(subscribeAck(frame), 'sub_abc');
+	});
+
+	it('is not confused by a notification', () => {
+		assert.equal(subscribeAck({ method: 'notification', params: {} }), undefined);
+	});
+
+	it('returns undefined when the reply carries no subscription', () => {
+		assert.equal(subscribeAck({ id: 2, result: { ok: true } }), undefined);
 	});
 });

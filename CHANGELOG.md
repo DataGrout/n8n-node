@@ -1,4 +1,4 @@
-## [1.0.0] — unreleased
+## [0.4.0] — unreleased
 
 **Breaking.** The node is now organised around DataGrout operations instead of
 raw tool calls, and talks to DataGrout's JSON-RPC API rather than MCP. Existing
@@ -6,6 +6,10 @@ workflows using the old *DataGrout MCP* node need to be repointed at the new
 **DataGrout** node.
 
 ### Added
+- **DataGrout Trigger** — starts a workflow when DataGrout pushes an event, over
+  one multiplexed WebSocket. Subscribes to a topic, emits one item per event,
+  filters connection lifecycle frames so a reconnect does not fire the workflow,
+  and reopens dropped connections with a backing-off delay. Requires Node 22+.
 - **Answer → Ask** — a question in plain language returns a verified answer, a
   caveat when DataGrout could not verify it, and a certificate URL.
 - **Data → Transform** — server-side compute over inline data or a reference,
