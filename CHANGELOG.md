@@ -1,3 +1,30 @@
+## [1.0.0] — unreleased
+
+**Breaking.** The node is now organised around DataGrout operations instead of
+raw tool calls, and talks to DataGrout's JSON-RPC API rather than MCP. Existing
+workflows using the old *DataGrout MCP* node need to be repointed at the new
+**DataGrout** node.
+
+### Added
+- **Answer → Ask** — a question in plain language returns a verified answer, a
+  caveat when DataGrout could not verify it, and a certificate URL.
+- **Data → Transform** — server-side compute over inline data or a reference,
+  returning one item per record.
+- **Memory → Remember / Recall** — facts that persist across executions, and
+  recall that includes what can be inferred from them.
+- **Skill → Run** — re-run previously verified work.
+- **API Token authentication** alongside OAuth2, selectable on the node.
+- The JSON-RPC transport is switched on automatically, including by the
+  credential test, so nothing needs configuring in the DataGrout dashboard.
+
+### Changed
+- Tool names are gone from the interface. Operations are named for what they do.
+- A tool-level failure reported inside a success response now fails the node,
+  instead of returning an empty answer marked verified.
+
+### Removed
+- The **DataGrout MCP** node and its `List Tools` / `Execute Tool` operations.
+
 ## [0.3.1] - 2026-08-17
 
 The gateway now serves every account from one global endpoint, and connecting is

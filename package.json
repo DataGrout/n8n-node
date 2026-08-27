@@ -1,14 +1,14 @@
 {
     "name": "@datagrout/n8n-nodes-datagrout",
-    "version": "0.3.1",
-    "description": "List and call your DataGrout MCP server tools from n8n workflows and AI Agents",
+    "version": "1.0.0",
+    "description": "Ask questions of your connected business data from n8n workflows and AI Agents, and get verified answers",
     "license": "MIT",
     "homepage": "https://github.com/DataGrout/n8n-node",
     "keywords": [
         "n8n-community-node-package",
         "datagrout",
-        "mcp",
-        "model-context-protocol"
+        "ai",
+        "business-data"
     ],
     "author": {
         "name": "DataGrout",
@@ -34,10 +34,11 @@
         "n8nNodesApiVersion": 1,
         "strict": false,
         "credentials": [
+            "dist/credentials/DataGroutApi.credentials.js",
             "dist/credentials/DataGroutOAuth2Api.credentials.js"
         ],
         "nodes": [
-            "dist/nodes/DataGroutMcp/DataGroutMcpTool.node.js"
+            "dist/nodes/DataGrout/DataGrout.node.js"
         ]
     },
     "devDependencies": {

@@ -1,113 +1,84 @@
 # @datagrout/n8n-nodes-datagrout
 
-**DataGrout MCP** — an n8n node that calls a tool on your
-[DataGrout](https://datagrout.ai) MCP server. Each node is pinned to one tool,
-and because the node is marked `usableAsTool` it works in two places:
+Ask questions of your connected business data from n8n — and get answers you can
+check.
 
-- **In a workflow** — Main in, Main out, like any other action node.
-- **On an AI Agent's Tool connector** — the agent calls it and fills in the
-  arguments itself.
+[DataGrout](https://datagrout.ai) plans the work from your question, runs it
+against the systems you have connected, verifies the result against what you
+asked, and returns a certificate showing exactly what ran. This node puts that
+in a workflow, and on an AI Agent's Tool connector.
 
-This package has **no runtime dependencies**.
+No runtime dependencies.
 
-## What the node handles for you
+## Operations
 
-- **Background tasks** — slow DataGrout requests are moved to a background task
-  server-side; the node waits and returns the finished result.
-- **Lean responses** — large result sets return as a short preview plus a
-  server-side reference DataGrout's compute tools accept, keeping huge row sets
-  out of the workflow or the agent's context.
-- **Connection reuse** — calls share one server session instead of
-  re-connecting every time.
+| Resource | Operation | What it does |
+|---|---|---|
+| **Answer** | Ask | Ask in plain language. DataGrout plans, runs and verifies, and returns the answer plus a certificate URL. |
+| **Data** | Transform | Describe the result you want; DataGrout computes it on its own servers and returns records. |
+| **Memory** | Remember / Recall | Store facts as workflows run, then ask what is known — including what can be inferred from it. |
+| **Skill** | Run | Re-run work DataGrout has already verified. No planning, so it is fast and repeatable. |
+
+### Why Transform is worth using
+
+A large result never has to pass through your workflow. Ask an earlier step for
+a **reference** instead of rows, hand that reference to Transform, and the
+grouping or aggregation happens next to the data — you get back only the answer.
+
+### Memory outlives the run
+
+Facts stored with **Remember** are still there on the next execution, and on
+other workflows pointed at the same memory. **Recall** answers from stored facts
+and from what follows logically from them, with no model call.
 
 ## Installation
 
 **Settings → Community Nodes → Install** → `@datagrout/n8n-nodes-datagrout`.
 
-To use the node on an AI Agent's Tool connector on a self-hosted instance, set
+To use it on an AI Agent's Tool connector on a self-hosted instance, set
 `N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true` and restart n8n.
 
-## Credentials — DataGrout OAuth2 API
+## Credentials
 
-Create the credential and click **Connect my account**. That is the whole setup:
-there is nothing to fill in.
+Choose either on the node's **Authentication** field.
 
-No client ID or secret, because DataGrout registers OAuth clients dynamically
-and n8n discovers the authorization server and registers itself. No server ID or
-URL, because every account is served from one gateway endpoint. n8n also
-refreshes the access token when it expires, so long-running workflows keep
-working.
+**DataGrout API** (simplest)
 
-## Operations
+| Field | Where it comes from |
+|---|---|
+| API Token | Your DataGrout dashboard |
+| Server ID | Your DataGrout server UUID |
+| Gateway Base URL | Leave as-is unless you self-host the gateway |
 
-| Operation | What it does |
-|-----------|--------------|
-| **Execute Tool** | Calls a tool on the server. |
-| **List Tools** | Returns every allowed tool with its description and input schema. |
+**DataGrout OAuth2 API** — for instances that prefer an OAuth flow.
 
-## Tools to Allow — the permission boundary
+Testing the credential also switches on the JSON-RPC transport this node uses,
+so there is nothing to configure in the DataGrout dashboard.
 
-| Mode | Who picks the tool | Use it for |
-|------|--------------------|-----------|
-| **All** (default) | the model, at call time | giving an agent your whole server |
-| **Selected** | the model, limited to your allow-list | giving an agent a safe subset |
-| **Single Tool** | you, from a dropdown | a fixed step in a workflow |
+## Using it with an AI Agent
 
-With **Selected**, a tool outside the allow-list is refused rather than called,
-even if the model asks for it.
+The free-text fields default to `$fromAI(...)`, so an agent can fill them in
+with no extra setup — connect the node to the agent's Tool connector and ask a
+question. Replace a field with a fixed value to pin it.
 
-## Usage in a workflow
+`examples/datagrout-ai-agent.json` is a ready-made chat agent wired to
+DataGrout; import it from **Workflows → Import from File**.
 
-1. Add a **DataGrout MCP** node and select the credential.
-2. Set **Tools to Allow** to **Single Tool** and pick one in **Tool Name or ID** —
-   the dropdown lists your server's tools.
-3. Fill **Tool Arguments** with a JSON object matching that tool's input schema.
+## Options
 
-The node outputs the tool's `structuredContent` as item JSON when the server
-provides it, so downstream nodes can map over real fields.
+- **Wait for Result** — DataGrout moves slow work to the background; the node
+  waits this long for the finished result. Set 0 to return immediately.
+- **Full Response** — return everything DataGrout sent rather than the tidied
+  answer.
 
-## Usage as an AI Agent tool
+## Development
 
-To give an agent access to your **whole server**, wire up two nodes:
-
-1. A **DataGrout MCP** node set to **List Tools**, renamed something like
-   *List DataGrout Tools*.
-2. A second set to **Execute Tool** with **Tools to Allow** on **All**, renamed
-   *Run DataGrout Tool*. Leave **Tool Name** and **Tool Arguments** alone — they
-   already contain `$fromAI()`, so the model fills them at call time.
-3. Connect both to the agent's **Tool** connector.
-
-The agent calls List Tools to learn what exists, then calls Execute Tool with any
-name it found. To narrow that down, switch **Tools to Allow** to **Selected** and
-choose the tools it may reach.
-
-Rename each node after what it does: n8n derives the agent-facing tool name from
-the node's name on the canvas, so a clear name helps the model pick correctly.
-
-When a call fails during agent execution, the node hands the error text back to
-the model as data rather than aborting the agent's step, so the agent can read
-the message and correct itself.
-
-### Want every tool as a separate agent tool?
-
-Use n8n's built-in **MCP Client Tool** node, which exposes each server tool to
-the agent individually:
-
-- **Server Transport**: HTTP Streamable
-- **Endpoint**: `https://gateway.datagrout.ai/connect`
-- **Authentication**: Bearer, with your DataGrout API token
-
-A community node cannot reproduce that fan-out: n8n only splits one connection
-into many agent tools when the value is an instance of `StructuredToolkit`, a
-class inside `n8n-core` that community packages aren't allowed to import. The
-trade-off is that the built-in node is generic — it won't do this package's
-background-task collection or lean responses.
-
-## Resources
-
-- [DataGrout documentation](https://library.datagrout.ai/)
-- [DataGrout authentication guide](https://library.datagrout.ai/authentication)
-- [n8n community nodes documentation](https://docs.n8n.io/integrations/community-nodes/)
+```bash
+npm install
+npm test          # unit tests, no dependencies
+npm run build
+npm run lint
+```
 
 ## License
 
