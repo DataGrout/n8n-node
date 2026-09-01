@@ -51,7 +51,8 @@ function bearer(credentials: Credentials): string | undefined {
 function exampleEvent(event = 'run.completed'): IDataObject {
 	const examples: Record<string, IDataObject> = {
 		'run.completed': {
-			run_id: 'exec_1a2b3c',
+			run_id: 79566,
+			execution_id: 'exec_1a2b3c',
 			status: 'success',
 			tool_name: 'discovery.plan',
 			source: 'mcp',
@@ -70,7 +71,8 @@ function exampleEvent(event = 'run.completed'): IDataObject {
 			status: 'failed',
 		},
 		'tool_call.failed': {
-			run_id: 'exec_1a2b3c',
+			run_id: 79566,
+			execution_id: 'exec_1a2b3c',
 			tool_name: 'logic.query',
 			error: 'namespace not found',
 		},

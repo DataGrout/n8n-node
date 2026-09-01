@@ -39,15 +39,18 @@ the events you care about:
 
 | Event | Carries |
 | --- | --- |
-| Run Completed | `run_id`, `status`, `tool_name`, `source`, `duration_ms` |
+| Run Completed | `run_id`, `execution_id`, `status`, `tool_name`, `source`, `duration_ms` |
 | Task Completed | `task_id`, `tool_name`, `cache_ref`, `status` |
 | Task Failed | `task_id`, `tool_name`, `error`, `status` |
-| Tool Call Failed | `run_id`, `tool_name`, `error` |
+| Tool Call Failed | `run_id`, `execution_id`, `tool_name`, `error` |
 
 `Run Completed` fires on every terminal status, so failed, timed-out and
 cancelled runs arrive there too — the status comes with the event. Leave the
 selection empty to receive everything, including events added to DataGrout
 after this release.
+
+`run_id` is the integer DataGrout's own `runs.get` accepts, so a following node
+can fetch the full run without translating anything.
 
 `Task Failed` is the one nothing else reports: a background task's caller has
 long stopped waiting by the time it fails.
