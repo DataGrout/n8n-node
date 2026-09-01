@@ -7,7 +7,12 @@ import type {
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError, sleep } from 'n8n-workflow';
 
-import { matchesEvent, subscribeAck, subscriptionEvent } from '../DataGrout/pure';
+import {
+	EVENTS_TOPIC,
+	SUBPROTOCOL,
+	exampleEvent,
+	startEventSession,
+} from '../DataGrout/pure';
 
 // ────────────────────────────────────────────────────────────────────
 // Starts a workflow when DataGrout pushes an event.
@@ -16,25 +21,12 @@ import { matchesEvent, subscribeAck, subscriptionEvent } from '../DataGrout/pure
 // connection carries every subscription and the server pushes without
 // the workflow polling for anything. Node's built-in WebSocket is used,
 // keeping the package free of runtime dependencies.
-// ────────────────────────────────────────────────────────────────────
-
-const SUBPROTOCOL = 'datagrout-jsonrpc.v1';
-
-// DataGrout publishes every server-scoped lifecycle event to one well-known
-// topic, with the event name in the envelope. Subscribing once and filtering
-// beats guessing a topic per event category.
-const EVENTS_TOPIC = 'events';
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 30_000;
-
-// The gateway closes an idle socket after 60s, and a subscriber waiting for
-// events is idle by definition — without this the connection dropped and
-// re-subscribed every minute, losing anything published during the gap.
 //
-// A JSON-RPC notification (a request with no `id`) is the right shape: the spec
-// forbids a reply, so this resets the idle timer without provoking a frame or
-// a log line at either end. 25s leaves room for one to go missing.
-const KEEPALIVE_MS = 25_000;
+// The socket lifecycle itself lives in ../DataGrout/wsSession, which
+// takes its dependencies as arguments so the tests can drive it without
+// a network or the n8n runtime. What remains here is the adapter:
+// read parameters, supply a real socket, hand n8n its two callbacks.
+// ────────────────────────────────────────────────────────────────────
 
 type Credentials = {
 	apiToken?: string;
@@ -45,39 +37,6 @@ type Credentials = {
 
 function bearer(credentials: Credentials): string | undefined {
 	return credentials.oauthTokenData?.access_token ?? credentials.apiToken;
-}
-
-/** The fields a given event carries, for the editor's "Test step" button. */
-function exampleEvent(event = 'run.completed'): IDataObject {
-	const examples: Record<string, IDataObject> = {
-		'run.completed': {
-			run_id: 79566,
-			execution_id: 'exec_1a2b3c',
-			status: 'success',
-			tool_name: 'discovery.plan',
-			source: 'mcp',
-			duration_ms: 4210,
-		},
-		'task.completed': {
-			task_id: 'task_1a2b3c',
-			tool_name: 'prism.refract',
-			cache_ref: 'cache_9f8e7d',
-			status: 'completed',
-		},
-		'task.failed': {
-			task_id: 'task_1a2b3c',
-			tool_name: 'prism.refract',
-			error: 'upstream timed out',
-			status: 'failed',
-		},
-		'tool_call.failed': {
-			run_id: 79566,
-			execution_id: 'exec_1a2b3c',
-			tool_name: 'logic.query',
-			error: 'namespace not found',
-		},
-	};
-	return { event, ...(examples[event] ?? examples['run.completed']) };
 }
 
 // A trigger starts workflows and is never called by an agent. The property's
@@ -251,113 +210,26 @@ export class DataGroutTrigger implements INodeType {
 
 		const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/servers/${serverId}/ws`;
 
-		let socket: WebSocket | undefined;
-		let closing = false;
-		let attempt = 0;
-		let rpcId = 0;
-		let subscriptionId: string | undefined;
-
-		// One loop for the life of the trigger, rather than a timer per
-		// connection: it reads whichever socket is current.
-		const keepalive = async () => {
-			while (!closing) {
-				await sleep(KEEPALIVE_MS);
-				if (closing) return;
-				if (socket?.readyState !== WebSocket.OPEN) continue;
-				try {
-					socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'ping' }));
-				} catch {
-					// The close listener owns reconnection.
-				}
-			}
-		};
-
-		const reopenAfter = async (delay: number) => {
-			await sleep(delay);
-			if (!closing) open();
-		};
-
-		const open = () => {
-			if (closing) return;
-
+		const session = startEventSession({
+			topic,
+			events: wanted,
+			includeEventName,
+			reconnect,
+			sleep,
+			log: this.logger,
+			emit: (json) => this.emit([this.helpers.returnJsonArray([json])]),
 			// `headers` is an undici extension to the WHATWG constructor; it is how
 			// the bearer token reaches the upgrade request, which the standard API
 			// gives no way to do.
-			socket = new WebSocket(wsUrl, {
-				headers: { Authorization: `Bearer ${token}` },
-				protocols: [SUBPROTOCOL],
-			} as unknown as string[]);
+			connect: () =>
+				new WebSocket(wsUrl, {
+					headers: { Authorization: `Bearer ${token}` },
+					protocols: [SUBPROTOCOL],
+				} as unknown as string[]),
+			openState: WebSocket.OPEN,
+		});
 
-			socket.addEventListener('open', () => {
-				attempt = 0;
-				// The server issues a fresh subscription id per connection, so the
-				// previous one must not outlive its socket: holding a stale id would
-				// filter out every event from the new subscription, and permanently
-				// so if the new ack were ever missed.
-				subscriptionId = undefined;
-				this.logger.info(`[DataGrout Trigger] connected, subscribing to "${topic}"`);
-				socket?.send(
-					JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'subscribe', params: { topic } }),
-				);
-			});
-
-			socket.addEventListener('message', (message: MessageEvent) => {
-				let frame: IDataObject;
-				try {
-					frame = JSON.parse(String(message.data)) as IDataObject;
-				} catch {
-					return;
-				}
-
-				if (frame.error && frame.id !== undefined) {
-					const err = frame.error as IDataObject;
-					this.logger.error(`[DataGrout Trigger] DataGrout refused a call: ${err.message}`);
-					return;
-				}
-
-				const ack = subscribeAck(frame);
-				if (ack) {
-					subscriptionId = ack;
-					this.logger.info(`[DataGrout Trigger] subscribed to "${topic}" (${ack})`);
-					return;
-				}
-
-				// Ignores replies and connection lifecycle frames, so the workflow
-				// does not fire merely because the socket connected.
-				const carried = subscriptionEvent(frame, subscriptionId);
-				if (!carried) return;
-				if (!matchesEvent(carried.event, wanted)) return;
-
-				const json: IDataObject = includeEventName
-					? { event: carried.event, ...carried.data }
-					: { ...carried.data };
-				this.emit([this.helpers.returnJsonArray([json])]);
-			});
-
-			socket.addEventListener('close', () => {
-				if (closing || !reconnect) return;
-				const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt++, RECONNECT_MAX_MS);
-				this.logger.warn(`[DataGrout Trigger] connection closed, retrying in ${delay}ms`);
-				void reopenAfter(delay);
-			});
-
-			socket.addEventListener('error', () => {
-				// `close` always follows, which owns the retry.
-				this.logger.warn('[DataGrout Trigger] connection error');
-			});
-		};
-
-		open();
-		void keepalive();
-
-		const closeFunction = async () => {
-			closing = true;
-			try {
-				socket?.close();
-			} catch {
-				// already gone
-			}
-		};
+		const closeFunction = async () => session.close();
 
 		// "Test step" in the editor: emit an example carrying the real fields of
 		// whichever event was selected, so downstream nodes can be wired against

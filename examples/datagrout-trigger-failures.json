@@ -1,0 +1,75 @@
+{
+	"name": "Route DataGrout failures",
+	"nodes": [
+		{
+			"parameters": {
+				"authentication": "apiToken",
+				"events": ["task.failed", "tool_call.failed"],
+				"options": {}
+			},
+			"id": "trig2",
+			"name": "DataGrout Trigger",
+			"type": "@datagrout/n8n-nodes-datagrout.dataGroutTrigger",
+			"typeVersion": 1,
+			"position": [0, 0]
+		},
+		{
+			"parameters": {
+				"conditions": {
+					"options": {
+						"caseSensitive": true,
+						"leftValue": "",
+						"typeValidation": "strict",
+						"version": 2
+					},
+					"conditions": [
+						{
+							"id": "is-task-failure",
+							"leftValue": "={{ $json.event }}",
+							"rightValue": "task.failed",
+							"operator": {
+								"type": "string",
+								"operation": "equals"
+							}
+						}
+					],
+					"combinator": "and"
+				},
+				"options": {}
+			},
+			"id": "if2",
+			"name": "Which failure?",
+			"type": "n8n-nodes-base.if",
+			"typeVersion": 2.2,
+			"position": [240, 0]
+		},
+		{
+			"parameters": {},
+			"id": "noop-task",
+			"name": "Background task failed",
+			"type": "n8n-nodes-base.noOp",
+			"typeVersion": 1,
+			"position": [480, -100]
+		},
+		{
+			"parameters": {},
+			"id": "noop-tool",
+			"name": "Tool call failed inside a run",
+			"type": "n8n-nodes-base.noOp",
+			"typeVersion": 1,
+			"position": [480, 100]
+		}
+	],
+	"connections": {
+		"DataGrout Trigger": {
+			"main": [[{ "node": "Which failure?", "type": "main", "index": 0 }]]
+		},
+		"Which failure?": {
+			"main": [
+				[{ "node": "Background task failed", "type": "main", "index": 0 }],
+				[{ "node": "Tool call failed inside a run", "type": "main", "index": 0 }]
+			]
+		}
+	},
+	"settings": {}
+}

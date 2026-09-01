@@ -1,0 +1,39 @@
+{
+	"name": "Pick up a finished DataGrout task",
+	"nodes": [
+		{
+			"parameters": {
+				"authentication": "apiToken",
+				"events": ["task.completed"],
+				"options": {}
+			},
+			"id": "trig1",
+			"name": "DataGrout Trigger",
+			"type": "@datagrout/n8n-nodes-datagrout.dataGroutTrigger",
+			"typeVersion": 1,
+			"position": [0, 0]
+		},
+		{
+			"parameters": {
+				"authentication": "apiToken",
+				"resource": "data",
+				"operation": "transform",
+				"goal": "summarise these rows by the most useful grouping",
+				"inputMode": "cacheRef",
+				"cacheRef": "={{ $json.cache_ref }}",
+				"options": {}
+			},
+			"id": "dg1",
+			"name": "Transform the result",
+			"type": "@datagrout/n8n-nodes-datagrout.dataGrout",
+			"typeVersion": 1,
+			"position": [240, 0]
+		}
+	],
+	"connections": {
+		"DataGrout Trigger": {
+			"main": [[{ "node": "Transform the result", "type": "main", "index": 0 }]]
+		}
+	},
+	"settings": {}
+}
