@@ -290,6 +290,11 @@ export class DataGroutTrigger implements INodeType {
 
 			socket.addEventListener('open', () => {
 				attempt = 0;
+				// The server issues a fresh subscription id per connection, so the
+				// previous one must not outlive its socket: holding a stale id would
+				// filter out every event from the new subscription, and permanently
+				// so if the new ack were ever missed.
+				subscriptionId = undefined;
 				this.logger.info(`[DataGrout Trigger] connected, subscribing to "${topic}"`);
 				socket?.send(
 					JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'subscribe', params: { topic } }),
@@ -306,7 +311,7 @@ export class DataGroutTrigger implements INodeType {
 
 				if (frame.error && frame.id !== undefined) {
 					const err = frame.error as IDataObject;
-					this.logger.error(`[DataGrout Trigger] subscribe refused: ${err.message}`);
+					this.logger.error(`[DataGrout Trigger] DataGrout refused a call: ${err.message}`);
 					return;
 				}
 
