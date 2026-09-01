@@ -95,11 +95,49 @@ export function unwrapData(payload: IDataObject): unknown {
  * workflow a null answer marked verified (live-caught 2026-08-27), which is
  * the one outcome this integration must never produce.
  */
+/**
+ * The message for a DataGrout loop-guard intervention, else undefined.
+ *
+ * DataGrout guards against repeated identical calls: an identical read issued
+ * several times with nothing changing in between, or a write repeated with the
+ * same arguments, is answered with an explanation rather than run again.
+ *
+ * Two of those replies are not marked as errors, so without this check they
+ * reach a workflow as though they were the answer — a downstream node expecting
+ * rows receives `{loop_detected: true, …}` instead (live-caught 2026-09-01).
+ * Nothing ran, so the honest outcome is a failure that says what happened.
+ */
+export function interventionNotice(payload: IDataObject | undefined): string | undefined {
+	if (!payload || payload.loop_detected !== true) return undefined;
+
+	const count = payload.execution_count;
+	const times = typeof count === 'number' ? `${count} times` : 'more than once';
+
+	// These read as the tail of the node's own "DataGrout: " prefix, so they do
+	// not repeat the product name.
+	if (payload.action === 'confirm_or_change_args') {
+		return (
+			`this action was already called ${times} in this session with identical ` +
+			'arguments, so it was not repeated and the earlier result still stands. Change the ' +
+			'arguments if it genuinely needs to happen again.'
+		);
+	}
+
+	return (
+		`this identical call ran ${times} with nothing changing in between, so the loop ` +
+		'guard stopped it and no new result was produced. Vary the input, or raise the ' +
+		"loop-guard thresholds in this server's interaction settings."
+	);
+}
+
 export function payloadError(payload: IDataObject | undefined): string | undefined {
 	if (!payload) return undefined;
 
 	for (const candidate of [payload, payload.data as IDataObject]) {
 		if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+
+		const intervention = interventionNotice(candidate);
+		if (intervention) return intervention;
 
 		const err = candidate.error;
 		if (typeof err === 'string' && err.trim()) return err;

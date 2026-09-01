@@ -29,6 +29,12 @@ workflows using the old *DataGrout MCP* node need to be repointed at the new
 
 ### Changed
 - Tool names are gone from the interface. Operations are named for what they do.
+- A loop-guard intervention now fails the node instead of arriving as the answer.
+  DataGrout answers an identical call repeated with nothing changing in between
+  with an explanation rather than a result, and two of those replies are not
+  marked as errors — so a downstream node expecting rows used to receive
+  `{loop_detected: true, …}` as its data. The message says what happened and how
+  to proceed.
 - A tool-level failure reported inside a success response now fails the node,
   instead of returning an empty answer marked verified.
 

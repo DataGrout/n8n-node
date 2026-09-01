@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
 	INVALID_REQUEST,
 	detachedTaskRef,
+	interventionNotice,
 	isProtocolDisabled,
 	matchesEvent,
 	parseJsonData,
@@ -370,5 +371,84 @@ describe('matchesEvent', () => {
 
 	it('does not match on a prefix', () => {
 		assert.equal(matchesEvent('task.completed', ['task']), false);
+	});
+});
+
+// Shapes taken from DataGrout's loop guard in mcp_server.ex. Two of the three
+// interventions are not flagged as errors, so they would otherwise be handed to
+// a workflow as the answer. The read-tier one below is the exact payload a live
+// run produced on 2026-09-01.
+describe('interventionNotice', () => {
+	it('catches the read-tier loop that arrives as a success', () => {
+		const live = {
+			action: 'possible_loop',
+			consequence_tier: 'read',
+			execution_count: 4,
+			loop_detected: true,
+		};
+		const notice = interventionNotice(live);
+		assert.ok(notice);
+		assert.match(notice, /loop\s+guard stopped it/);
+		assert.match(notice, /4 times/);
+	});
+
+	it('catches the write-confirmation gate', () => {
+		const notice = interventionNotice({
+			loop_detected: true,
+			consequence_tier: 'write',
+			execution_count: 2,
+			action: 'confirm_or_change_args',
+			original_receipt_id: 'rcpt_1',
+		});
+		assert.ok(notice);
+		assert.match(notice, /was not repeated/);
+		assert.match(notice, /2 times/);
+	});
+
+	it('catches a write-tier loop', () => {
+		const notice = interventionNotice({
+			loop_detected: true,
+			consequence_tier: 'write',
+			execution_count: 3,
+			action: 'use_previous_result',
+		});
+		assert.ok(notice);
+	});
+
+	it('copes with a missing count', () => {
+		const notice = interventionNotice({ loop_detected: true, action: 'possible_loop' });
+		assert.match(notice as string, /more than once/);
+	});
+
+	it('is silent on an ordinary payload', () => {
+		assert.equal(interventionNotice({ result: 42 }), undefined);
+		assert.equal(interventionNotice({ loop_detected: false }), undefined);
+		assert.equal(interventionNotice(undefined), undefined);
+	});
+});
+
+describe('payloadError surfaces an intervention as a failure', () => {
+	it('fails rather than handing the intervention to the workflow', () => {
+		const live = {
+			action: 'possible_loop',
+			consequence_tier: 'read',
+			execution_count: 4,
+			loop_detected: true,
+		};
+		assert.match(payloadError(live) as string, /loop\s+guard stopped it/);
+	});
+
+	it('finds one nested under data', () => {
+		assert.ok(payloadError({ data: { loop_detected: true, action: 'possible_loop' } }));
+	});
+
+	it('never reports an intervention as a verified answer', () => {
+		const shaped = shapeAnswer({
+			loop_detected: true,
+			action: 'possible_loop',
+			execution_count: 5,
+			answer_confidence: 'high',
+		});
+		assert.equal(shaped.verified, false);
 	});
 });

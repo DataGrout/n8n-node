@@ -81,6 +81,35 @@ project _may_ contain example nodes and/or credentials that need to be
   CHANGELOG.md** in the root of the repository
 - Read `.agents/workflow.md` for more info
 
+## Live testing against a real gateway
+
+`npm test` is offline by design — the committed tests never touch the network, so
+CI needs no credentials and none are stored in this repo or its history. Keep it
+that way. Every bug the unit tests missed here was instead found by running the
+built node inside a real n8n against a real DataGrout server, by hand.
+
+To do that: `npm pack`, extract the tarball into
+`<n8n-data>/nodes/node_modules/@datagrout/n8n-nodes-datagrout`, and drive it with
+the `n8n` CLI (`import:credentials`, `import:workflow`, `update:workflow
+--active=true`, `execute --id=…`). Run `execute` in a container with no n8n server
+running, or its task broker port collides.
+
+Two things to know:
+
+- **Vary the input on every run.** DataGrout's loop guard answers an identical
+  call repeated with nothing changing in between with an explanation instead of a
+  result — by default on the 4th identical read. A test that re-runs the same
+  payload starts failing on the 4th attempt, and the failure is not yours. Change
+  a value each run. If a test genuinely must repeat a call verbatim, use the
+  server's `interaction_config["cadence"]` overrides (`exempt_tools`, or higher
+  thresholds) rather than weakening the node.
+- **Never commit a token.** Use a throwaway server and a token you can rotate,
+  keep it in the local n8n credential store or an untracked file, and keep it out
+  of committed fixtures, examples and docs. If a live smoke test is ever added to
+  CI it must read its token from a repository secret, must skip when that secret
+  is absent (so forked pull requests neither fail nor see it), and should point at
+  a server holding nothing worth stealing.
+
 ## Context-specific docs
 Load these before working on the relevant area:
 
