@@ -7,9 +7,12 @@ workflows using the old *DataGrout MCP* node need to be repointed at the new
 
 ### Added
 - **DataGrout Trigger** — starts a workflow when DataGrout pushes an event, over
-  one multiplexed WebSocket. Subscribes to a topic, emits one item per event,
+  one multiplexed WebSocket. Subscribes once to the server's event stream and
+  filters by event (`run.completed`, `task.completed`, `task.failed`,
+  `tool_call.failed`), emits one item per event,
   filters connection lifecycle frames so a reconnect does not fire the workflow,
-  and reopens dropped connections with a backing-off delay. Requires Node 22+.
+  holds the connection open with a keepalive, and reopens a dropped one with a
+  backing-off delay. Requires Node 22+.
 - **Answer → Ask** — a question in plain language returns a verified answer, a
   caveat when DataGrout could not verify it, and a certificate URL.
 - **Data → Transform** — server-side compute over inline data or a reference,

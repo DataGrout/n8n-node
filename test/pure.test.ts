@@ -5,6 +5,7 @@ import {
 	INVALID_REQUEST,
 	detachedTaskRef,
 	isProtocolDisabled,
+	matchesEvent,
 	parseJsonData,
 	parseJsonObject,
 	payloadError,
@@ -344,5 +345,30 @@ describe('subscribeAck', () => {
 
 	it('returns undefined when the reply carries no subscription', () => {
 		assert.equal(subscribeAck({ id: 2, result: { ok: true } }), undefined);
+	});
+});
+
+// The four slugs DataGrout publishes to ws:<server>:events, verified against
+// DataGrout.WsEvents.events/0.
+describe('matchesEvent', () => {
+	it('passes every event when nothing is selected', () => {
+		assert.equal(matchesEvent('run.completed', []), true);
+		assert.equal(matchesEvent('anything.new', []), true);
+	});
+
+	it('passes every event when the selection is absent', () => {
+		assert.equal(matchesEvent('run.completed', undefined), true);
+	});
+
+	it('passes a selected event', () => {
+		assert.equal(matchesEvent('task.failed', ['run.completed', 'task.failed']), true);
+	});
+
+	it('rejects an event that was not selected', () => {
+		assert.equal(matchesEvent('run.completed', ['task.failed']), false);
+	});
+
+	it('does not match on a prefix', () => {
+		assert.equal(matchesEvent('task.completed', ['task']), false);
 	});
 });

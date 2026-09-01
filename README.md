@@ -34,11 +34,27 @@ and from what follows logically from them, with no model call.
 ## DataGrout Trigger
 
 A second node starts a workflow when DataGrout pushes an event, over a single
-multiplexed WebSocket — no polling. Give it the **topic** a run publishes to and
-it emits one item per event, with the event name attached.
+multiplexed WebSocket — no polling, and no webhook URL to paste anywhere. Pick
+the events you care about:
+
+| Event | Carries |
+| --- | --- |
+| Run Completed | `run_id`, `status`, `tool_name`, `source`, `duration_ms` |
+| Task Completed | `task_id`, `tool_name`, `cache_ref`, `status` |
+| Task Failed | `task_id`, `tool_name`, `error`, `status` |
+| Tool Call Failed | `run_id`, `tool_name`, `error` |
+
+`Run Completed` fires on every terminal status, so failed, timed-out and
+cancelled runs arrive there too — the status comes with the event. Leave the
+selection empty to receive everything, including events added to DataGrout
+after this release.
+
+`Task Failed` is the one nothing else reports: a background task's caller has
+long stopped waiting by the time it fails.
 
 Connection lifecycle frames are filtered out, so a reconnect does not start your
-workflow. Dropped connections reopen on a backing-off delay.
+workflow. The connection is held open with a periodic keepalive, and a genuinely
+dropped one reopens on a backing-off delay.
 
 > Requires n8n on Node 22 or newer (the trigger uses Node's built-in WebSocket
 > so the package stays dependency-free).

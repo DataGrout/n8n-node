@@ -208,3 +208,13 @@ export function subscribeAck(frame: IDataObject): string | undefined {
 	const result = (frame.result as IDataObject) ?? {};
 	return typeof result.subscription === 'string' ? result.subscription : undefined;
 }
+
+/**
+ * Whether an event slug is one the workflow asked for. An empty selection
+ * means every event, which also means a slug added to DataGrout later arrives
+ * without the node needing a new release.
+ */
+export function matchesEvent(event: string, wanted: string[] | undefined): boolean {
+	if (!wanted || wanted.length === 0) return true;
+	return wanted.includes(event);
+}

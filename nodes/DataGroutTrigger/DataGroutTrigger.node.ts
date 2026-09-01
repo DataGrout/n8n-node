@@ -7,7 +7,7 @@ import type {
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError, sleep } from 'n8n-workflow';
 
-import { subscribeAck, subscriptionEvent } from '../DataGrout/pure';
+import { matchesEvent, subscribeAck, subscriptionEvent } from '../DataGrout/pure';
 
 // ────────────────────────────────────────────────────────────────────
 // Starts a workflow when DataGrout pushes an event.
@@ -19,8 +19,22 @@ import { subscribeAck, subscriptionEvent } from '../DataGrout/pure';
 // ────────────────────────────────────────────────────────────────────
 
 const SUBPROTOCOL = 'datagrout-jsonrpc.v1';
+
+// DataGrout publishes every server-scoped lifecycle event to one well-known
+// topic, with the event name in the envelope. Subscribing once and filtering
+// beats guessing a topic per event category.
+const EVENTS_TOPIC = 'events';
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+
+// The gateway closes an idle socket after 60s, and a subscriber waiting for
+// events is idle by definition — without this the connection dropped and
+// re-subscribed every minute, losing anything published during the gap.
+//
+// A JSON-RPC notification (a request with no `id`) is the right shape: the spec
+// forbids a reply, so this resets the idle timer without provoking a frame or
+// a log line at either end. 25s leaves room for one to go missing.
+const KEEPALIVE_MS = 25_000;
 
 type Credentials = {
 	apiToken?: string;
@@ -33,6 +47,37 @@ function bearer(credentials: Credentials): string | undefined {
 	return credentials.oauthTokenData?.access_token ?? credentials.apiToken;
 }
 
+/** The fields a given event carries, for the editor's "Test step" button. */
+function exampleEvent(event = 'run.completed'): IDataObject {
+	const examples: Record<string, IDataObject> = {
+		'run.completed': {
+			run_id: 'exec_1a2b3c',
+			status: 'success',
+			tool_name: 'discovery.plan',
+			source: 'mcp',
+			duration_ms: 4210,
+		},
+		'task.completed': {
+			task_id: 'task_1a2b3c',
+			tool_name: 'prism.refract',
+			cache_ref: 'cache_9f8e7d',
+			status: 'completed',
+		},
+		'task.failed': {
+			task_id: 'task_1a2b3c',
+			tool_name: 'prism.refract',
+			error: 'upstream timed out',
+			status: 'failed',
+		},
+		'tool_call.failed': {
+			run_id: 'exec_1a2b3c',
+			tool_name: 'logic.query',
+			error: 'namespace not found',
+		},
+	};
+	return { event, ...(examples[event] ?? examples['run.completed']) };
+}
+
 // A trigger starts workflows and is never called by an agent. The property's
 // type only accepts `true`, so it is omitted rather than set to false.
 // eslint-disable-next-line @n8n/community-nodes/node-usable-as-tool
@@ -43,8 +88,9 @@ export class DataGroutTrigger implements INodeType {
 		icon: { light: 'file:datagrout.svg', dark: 'file:datagrout.dark.svg' },
 		group: ['trigger'],
 		version: 1,
-		subtitle: '={{"on: " + $parameter["topic"]}}',
-		description: 'Start a workflow when DataGrout reports progress on a run',
+		subtitle:
+			'={{ $parameter["events"].length ? "on: " + $parameter["events"].join(", ") : "on: any event" }}',
+		description: 'Start a workflow when a DataGrout run or background task finishes or fails',
 		defaults: { name: 'DataGrout Trigger' },
 		codex: {
 			categories: ['AI', 'Data & Storage'],
@@ -78,14 +124,37 @@ export class DataGroutTrigger implements INodeType {
 				default: 'apiToken',
 			},
 			{
-				displayName: 'Topic',
-				name: 'topic',
-				type: 'string',
-				required: true,
-				default: '',
-				placeholder: 'orchestrate.run_abc123',
+				displayName: 'Events',
+				name: 'events',
+				type: 'multiOptions',
+				default: [],
 				description:
-					'The stream of events to listen to. DataGrout publishes a run\'s progress to a topic named after that run; pass your own topic when you start the run to choose the name.',
+					'Which events start the workflow. Leave empty to receive every event DataGrout publishes for this server.',
+				options: [
+					{
+						name: 'Run Completed',
+						value: 'run.completed',
+						description:
+							'A run reached a terminal status. The status travels with the event, so failed, timed-out and cancelled runs arrive here too.',
+					},
+					{
+						name: 'Task Completed',
+						value: 'task.completed',
+						description:
+							'A background task finished. Its cache_ref comes with the event, so a following node can fetch the result.',
+					},
+					{
+						name: 'Task Failed',
+						value: 'task.failed',
+						description:
+							'A background task failed. Nothing else reports this — whoever started the task stopped waiting long before.',
+					},
+					{
+						name: 'Tool Call Failed',
+						value: 'tool_call.failed',
+						description: 'A tool call errored inside a run, which may still go on to recover',
+					},
+				],
 			},
 			{
 				displayName: 'Options',
@@ -109,6 +178,14 @@ export class DataGroutTrigger implements INodeType {
 						description:
 							'Whether to reopen the connection if it drops, with a backing-off delay',
 					},
+					{
+						displayName: 'Topic',
+						name: 'topic',
+						type: 'string',
+						default: EVENTS_TOPIC,
+						description:
+							'The stream to listen on. The default carries every lifecycle event for this server. Change it only to follow a single orchestration run, which publishes to a topic of its own.',
+					},
 				],
 			},
 		],
@@ -129,14 +206,11 @@ export class DataGroutTrigger implements INodeType {
 		const credentialName = authentication === 'oAuth2' ? 'dataGroutOAuth2Api' : 'dataGroutApi';
 		const credentials = (await this.getCredentials(credentialName)) as Credentials;
 
-		const topic = String(this.getNodeParameter('topic', '') ?? '').trim();
+		const wanted = this.getNodeParameter('events', []) as string[];
 		const options = this.getNodeParameter('options', {}) as IDataObject;
 		const includeEventName = (options.includeEventName as boolean) ?? true;
 		const reconnect = (options.reconnect as boolean) ?? true;
-
-		if (!topic) {
-			throw new NodeOperationError(this.getNode(), 'Topic is empty');
-		}
+		const topic = String(options.topic ?? EVENTS_TOPIC).trim() || EVENTS_TOPIC;
 
 		const token = bearer(credentials);
 		if (!token) {
@@ -180,6 +254,21 @@ export class DataGroutTrigger implements INodeType {
 		let attempt = 0;
 		let rpcId = 0;
 		let subscriptionId: string | undefined;
+
+		// One loop for the life of the trigger, rather than a timer per
+		// connection: it reads whichever socket is current.
+		const keepalive = async () => {
+			while (!closing) {
+				await sleep(KEEPALIVE_MS);
+				if (closing) return;
+				if (socket?.readyState !== WebSocket.OPEN) continue;
+				try {
+					socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'ping' }));
+				} catch {
+					// The close listener owns reconnection.
+				}
+			}
+		};
 
 		const reopenAfter = async (delay: number) => {
 			await sleep(delay);
@@ -230,6 +319,7 @@ export class DataGroutTrigger implements INodeType {
 				// does not fire merely because the socket connected.
 				const carried = subscriptionEvent(frame, subscriptionId);
 				if (!carried) return;
+				if (!matchesEvent(carried.event, wanted)) return;
 
 				const json: IDataObject = includeEventName
 					? { event: carried.event, ...carried.data }
@@ -251,6 +341,7 @@ export class DataGroutTrigger implements INodeType {
 		};
 
 		open();
+		void keepalive();
 
 		const closeFunction = async () => {
 			closing = true;
@@ -261,18 +352,11 @@ export class DataGroutTrigger implements INodeType {
 			}
 		};
 
-		// "Test step" in the editor: emit a shaped example so the user can wire
-		// downstream nodes without waiting for a real event.
+		// "Test step" in the editor: emit an example carrying the real fields of
+		// whichever event was selected, so downstream nodes can be wired against
+		// the actual shape without waiting for one to happen.
 		const manualTriggerFunction = async () => {
-			this.emit([
-				this.helpers.returnJsonArray([
-					{
-						event: 'example',
-						topic,
-						note: 'Example event. Real events arrive on this topic once DataGrout publishes to it.',
-					},
-				]),
-			]);
+			this.emit([this.helpers.returnJsonArray([exampleEvent(wanted[0])])]);
 		};
 
 		return { closeFunction, manualTriggerFunction };
