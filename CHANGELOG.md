@@ -21,8 +21,11 @@ workflows using the old *DataGrout MCP* node need to be repointed at the new
   recall that includes what can be inferred from them.
 - **Skill → Run** — re-run previously verified work.
 - **API Token authentication** alongside OAuth2, selectable on the node.
-- The JSON-RPC transport is switched on automatically, including by the
-  credential test, so nothing needs configuring in the DataGrout dashboard.
+- The transport a node needs is switched on automatically the first time a
+  workflow uses it — JSON-RPC on the node's first call, WebSocket when the
+  trigger starts — so nothing needs configuring in the DataGrout dashboard.
+  Both are logged, so a change to your server's settings is never silent.
+  Testing a credential only reads, and changes nothing.
 
 ### Changed
 - Tool names are gone from the interface. Operations are named for what they do.

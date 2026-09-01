@@ -117,10 +117,16 @@ Choose either on the node's **Authentication** field.
 **DataGrout OAuth2 API** — for instances that prefer an OAuth flow. Create the
 credential, click **Connect my account**, and there is nothing to fill in.
 
-DataGrout enables transports per server. Testing the credential also switches on
-the JSON-RPC transport these nodes use, and the trigger switches on the WebSocket
-transport when it starts, so there is nothing to configure in the DataGrout
-dashboard. Both calls are idempotent.
+Testing a credential only reads — it lists the tools your server exposes and
+changes nothing.
+
+DataGrout enables transports per server, and a new server has only MCP switched
+on. Rather than sending you to the dashboard, these nodes switch on the transport
+they need the first time a workflow actually uses it: the DataGrout node enables
+JSON-RPC on its first call, and the trigger enables WebSocket when it starts.
+Both are idempotent, and both are written to the n8n log so a change to your
+server's settings is never silent. Until then, a transport you have deliberately
+left off stays off.
 
 ## Using it with an AI Agent
 

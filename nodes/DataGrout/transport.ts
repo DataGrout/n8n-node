@@ -51,6 +51,11 @@ async function request(
  * Turn the JSON-RPC transport on for this server. DataGrout ships with only
  * MCP enabled, and this endpoint is idempotent and self-service, so the node
  * can enable what it needs instead of asking the user to find a toggle.
+ *
+ * This changes a setting on the user's own server, so it is logged rather than
+ * done silently. It happens only when a workflow is actually running — never
+ * from a credential test — so that leaving the transport switched off stays
+ * meaningful right up to the moment someone asks DataGrout to do something.
  */
 export async function enableJsonRpc(ctx: Ctx, itemIndex = 0): Promise<void> {
 	const { name, baseUrl, serverId } = await authContext(ctx, itemIndex);
@@ -64,6 +69,9 @@ export async function enableJsonRpc(ctx: Ctx, itemIndex = 0): Promise<void> {
 			timeout: DEFAULT_TIMEOUT_MS,
 		},
 		name,
+	);
+	ctx.logger.info(
+		`[DataGrout] switched on the JSON-RPC transport for server ${serverId}, which was not enabled`,
 	);
 }
 

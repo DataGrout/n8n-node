@@ -193,14 +193,27 @@ export class DataGroutTrigger implements INodeType {
 		// DataGrout gates transports per server, so make sure the WebSocket
 		// transport is on before dialling. Idempotent, and it keeps setup out of
 		// the dashboard.
+		//
+		// This changes a setting on the user's own server, so it is logged rather
+		// than done silently — and it happens on activation, when the user has
+		// asked for this trigger to run, rather than when they test a credential.
 		for (const protocol of ['ws', 'jsonrpc']) {
 			try {
-				await this.helpers.httpRequestWithAuthentication.call(this, credentialName, {
-					method: 'POST',
-					url: `${baseUrl}/servers/${serverId}/interaction/enable_protocol`,
-					body: { protocol },
-					json: true,
-				});
+				const result = (await this.helpers.httpRequestWithAuthentication.call(
+					this,
+					credentialName,
+					{
+						method: 'POST',
+						url: `${baseUrl}/servers/${serverId}/interaction/enable_protocol`,
+						body: { protocol },
+						json: true,
+					},
+				)) as IDataObject;
+				const enabled = result?.enabled_protocols;
+				this.logger.info(
+					`[DataGrout Trigger] "${protocol}" transport enabled on server ${serverId}` +
+						(Array.isArray(enabled) ? ` (now: ${enabled.join(', ')})` : ''),
+				);
 			} catch (error) {
 				this.logger.warn(
 					`[DataGrout Trigger] could not enable "${protocol}": ${(error as Error).message}`,
