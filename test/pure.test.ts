@@ -2,262 +2,453 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-	MAX_DESCRIPTION_CHARS,
-	MAX_LISTED_TOOLS,
-	describeTools,
+	INVALID_REQUEST,
 	detachedTaskRef,
-	errorText,
-	formatToolResult,
-	injectLeanDefaults,
-	normalizeToolName,
-	parsePossiblySse,
-	resolveToolName,
+	interventionNotice,
+	isProtocolDisabled,
+	matchesEvent,
+	parseJsonData,
+	parseJsonObject,
+	payloadError,
+	shapeAnswer,
+	subscribeAck,
+	subscriptionEvent,
 	taskRecord,
-	toOutputJson,
-} from '../nodes/DataGroutMcp/pure.ts';
+	toolPayload,
+	unwrapData,
+} from '../nodes/DataGrout/pure.ts';
 
-describe('parsePossiblySse', () => {
-	it('passes an already-parsed object through', () => {
-		const obj = { result: { ok: true } };
-		assert.equal(parsePossiblySse(obj), obj);
+// DataGrout servers ship with only MCP enabled; the node detects the refusal
+// and turns JSON-RPC on itself, so this predicate gates the whole first-run
+// experience.
+describe('isProtocolDisabled', () => {
+	it('recognises the transport-disabled refusal', () => {
+		assert.equal(
+			isProtocolDisabled({ code: INVALID_REQUEST, message: 'JSON-RPC not enabled for this server' }),
+			true,
+		);
 	});
 
-	it('parses a plain JSON body', () => {
-		assert.deepEqual(parsePossiblySse('{"result":{"a":1}}'), { result: { a: 1 } });
+	it('is case-insensitive on the message', () => {
+		assert.equal(
+			isProtocolDisabled({ code: INVALID_REQUEST, message: 'json-rpc NOT ENABLED for this server' }),
+			true,
+		);
 	});
 
-	it('parses a single SSE data frame', () => {
-		assert.deepEqual(parsePossiblySse('event: message\ndata: {"result":{"a":1}}\n\n'), {
-			result: { a: 1 },
-		});
+	it('does not fire on other invalid-request errors', () => {
+		assert.equal(isProtocolDisabled({ code: INVALID_REQUEST, message: 'Invalid params' }), false);
 	});
 
-	it('takes the LAST data frame when several are streamed', () => {
-		const body = 'data: {"result":{"n":1}}\n\ndata: {"result":{"n":2}}\n\n';
-		assert.deepEqual(parsePossiblySse(body), { result: { n: 2 } });
+	it('does not fire on a different code with a similar message', () => {
+		assert.equal(isProtocolDisabled({ code: -32000, message: 'JSON-RPC not enabled' }), false);
 	});
 
-	it('throws on a non-JSON body rather than returning junk', () => {
-		assert.throws(() => parsePossiblySse('502 Bad Gateway'));
+	it('handles a missing error', () => {
+		assert.equal(isProtocolDisabled(undefined), false);
 	});
 });
 
 describe('detachedTaskRef', () => {
-	it('returns the ref when the call detached', () => {
+	it('finds the reference when work detached', () => {
+		assert.equal(detachedTaskRef({ status: 'detached', task_ref: 'task_abc' }), 'task_abc');
+	});
+
+	it('looks inside structuredContent too', () => {
 		assert.equal(
-			detachedTaskRef({ structuredContent: { status: 'detached', task_ref: 'task_abc' } }),
-			'task_abc',
+			detachedTaskRef({ structuredContent: { status: 'detached', task_ref: 'task_xyz' } }),
+			'task_xyz',
 		);
 	});
 
-	it('returns undefined for an inline (non-detached) result', () => {
-		assert.equal(detachedTaskRef({ structuredContent: { status: 'ready' } }), undefined);
+	it('returns undefined for a completed call', () => {
+		assert.equal(detachedTaskRef({ status: 'ready' }), undefined);
 	});
 
-	it('returns undefined when structuredContent is absent', () => {
-		assert.equal(detachedTaskRef({ content: [] }), undefined);
-	});
-
-	it('ignores a non-string task_ref', () => {
-		assert.equal(
-			detachedTaskRef({ structuredContent: { status: 'detached', task_ref: 42 } }),
-			undefined,
-		);
+	it('ignores a non-string reference', () => {
+		assert.equal(detachedTaskRef({ status: 'detached', task_ref: 7 }), undefined);
 	});
 });
 
-// Regression cover for the shape bug found by live-testing 2026-07-23: a direct
-// tools/call puts the task record at the TOP of structuredContent, while the
-// discovery.perform wrapper nests it under .result.
+// Two envelope shapes occur live: a direct tool call puts the record at the
+// top, the perform wrapper nests it under .result.
 describe('taskRecord', () => {
-	it('reads a top-level task record (direct tools/call)', () => {
-		const sc = { completed: true, status: 'completed', result: { executed: true } };
-		assert.deepEqual(taskRecord(sc), sc);
+	it('reads a top-level record', () => {
+		const p = { completed: true, status: 'completed', result: { answer: 1 } };
+		assert.deepEqual(taskRecord(p), p);
 	});
 
-	it('reads a nested task record (discovery.perform wrapper)', () => {
+	it('reads a nested record', () => {
 		const inner = { completed: false, status: 'working' };
 		assert.deepEqual(taskRecord({ result: inner }), inner);
 	});
 
-	it('treats a bare task_ref as the record', () => {
-		const sc = { task_ref: 'task_abc', status: 'working' };
-		assert.deepEqual(taskRecord(sc), sc);
+	it('treats a bare reference as the record', () => {
+		const p = { task_ref: 'task_abc' };
+		assert.deepEqual(taskRecord(p), p);
 	});
 
-	it('returns an empty object for an unrecognised or missing envelope', () => {
-		assert.deepEqual(taskRecord({}), {});
+	it('copes with nothing', () => {
 		assert.deepEqual(taskRecord(undefined), {});
+		assert.deepEqual(taskRecord({}), {});
 	});
 });
 
-describe('injectLeanDefaults', () => {
-	it('adds lean+head for canonical discovery.plan', () => {
-		assert.deepEqual(injectLeanDefaults('data-grout@1/discovery.plan@1', { goal: 'x' }), {
-			lean: true,
-			head: true,
-			goal: 'x',
-		});
+describe('toolPayload', () => {
+	it('unwraps the doubly-wrapped result', () => {
+		const inner = { answer: 'yes', executed: true };
+		assert.deepEqual(toolPayload({ structuredContent: { result: inner } }), inner);
 	});
 
-	it('adds lean+head for the sanitized name some servers list', () => {
-		assert.deepEqual(injectLeanDefaults('discovery_plan', {}), { lean: true, head: true });
+	it('falls back to structuredContent when there is no inner result', () => {
+		const sc = { status: 'ready', plan: {} };
+		assert.deepEqual(toolPayload({ structuredContent: sc }), sc);
 	});
 
-	it('adds only head for discovery.perform', () => {
-		assert.deepEqual(injectLeanDefaults('data-grout@1/discovery.perform@1', {}), { head: true });
-	});
-
-	it('never overrides a caller-supplied value', () => {
-		assert.deepEqual(injectLeanDefaults('discovery_plan', { head: false }), {
-			lean: true,
-			head: false,
-		});
-	});
-
-	it('leaves non-discovery tools untouched', () => {
-		const args = { query: 'SELECT Id FROM Opportunity' };
-		assert.equal(injectLeanDefaults('salesforce@1/soql@1', args), args);
-		assert.equal(injectLeanDefaults('discovery_discover', args), args);
+	it('passes a bare result through', () => {
+		const bare = { rows: [1, 2] };
+		assert.deepEqual(toolPayload(bare), bare);
 	});
 });
 
-// The resolver is what stands between a model's free-text guess and the
-// gateway. Its contract: resolve confidently, or resolve to nothing so the
-// caller gets the catalogue back — never silently run a different tool.
-describe('resolveToolName', () => {
-	const available = [
-		'data-grout@1/discovery.plan@1',
-		'data-grout@1/discovery.perform@1',
-		'atlassian-jira@1/searchjiraissuesusingjql@1',
-		'salesforce@1/soql@1',
+describe('shapeAnswer', () => {
+	it('surfaces the answer, verification and certificate', () => {
+		const shaped = shapeAnswer({
+			result: [{ account: 'Acme' }],
+			answer_confidence: 'verified',
+			ctc: { id: 'ctc_abc', url: 'https://ctc.datagrout.ai/certs/ctc_abc' },
+			skill_handle: 'vs_abc',
+		});
+		assert.deepEqual(shaped.answer, [{ account: 'Acme' }]);
+		assert.equal(shaped.verified, true);
+		assert.equal(shaped.certificateUrl, 'https://ctc.datagrout.ai/certs/ctc_abc');
+		assert.equal(shaped.certificateId, 'ctc_abc');
+		assert.equal(shaped.skill, 'vs_abc');
+	});
+
+	it('marks an unverified answer and carries the caveat', () => {
+		const shaped = shapeAnswer({
+			result: [],
+			answer_confidence: 'unverified',
+			hint: 'Could not confirm the Jira leg ran',
+		});
+		assert.equal(shaped.verified, false);
+		assert.equal(shaped.caveat, 'Could not confirm the Jira leg ran');
+	});
+
+	it('never loses the original payload', () => {
+		const payload = { result: 1, extra: 'kept' };
+		assert.deepEqual(shapeAnswer(payload).details, payload);
+	});
+
+	it('treats an absent confidence as verified', () => {
+		assert.equal(shapeAnswer({ result: 1 }).verified, true);
+	});
+});
+
+describe('parseJsonObject', () => {
+	it('parses a typed JSON string', () => {
+		assert.deepEqual(parseJsonObject('{"a":1}'), { a: 1 });
+	});
+
+	it('passes an expression-supplied object through', () => {
+		const o = { a: 1 };
+		assert.equal(parseJsonObject(o), o);
+	});
+
+	it('treats empty as not provided', () => {
+		assert.equal(parseJsonObject(''), undefined);
+		assert.equal(parseJsonObject(undefined), undefined);
+		assert.equal(parseJsonObject(null), undefined);
+	});
+
+	it('rejects an array and explains why', () => {
+		assert.throws(() => parseJsonObject([1, 2]), /array/);
+	});
+
+	it('rejects malformed JSON with a readable message', () => {
+		assert.throws(() => parseJsonObject('{oops'), /not valid JSON/);
+	});
+});
+
+describe('parseJsonData', () => {
+	it('accepts an array of records', () => {
+		assert.deepEqual(parseJsonData('[{"a":1}]'), [{ a: 1 }]);
+	});
+
+	it('accepts an object', () => {
+		assert.deepEqual(parseJsonData('{"a":1}'), { a: 1 });
+	});
+
+	it('treats empty as not provided', () => {
+		assert.equal(parseJsonData(''), undefined);
+	});
+
+	it('rejects malformed JSON', () => {
+		assert.throws(() => parseJsonData('nope'), /not valid JSON/);
+	});
+});
+
+// The exact envelope prism.refract returned over JSON-RPC, live-captured
+// 2026-08-27: the computed rows arrive as a JSON string inside a nested tool
+// response, which a workflow must never be handed raw.
+describe('unwrapData', () => {
+	const rows = [
+		{ region: 'south', total_amount: 25 },
+		{ region: 'north', total_amount: 15 },
 	];
 
-	it('returns an exact match unchanged', () => {
-		assert.equal(resolveToolName('salesforce@1/soql@1', available), 'salesforce@1/soql@1');
-	});
-
-	it('resolves a less-qualified name the model wrote', () => {
-		assert.equal(resolveToolName('discovery.plan', available), 'data-grout@1/discovery.plan@1');
-		assert.equal(resolveToolName('discovery_plan', available), 'data-grout@1/discovery.plan@1');
-	});
-
-	it('resolves a MORE-qualified name against a sanitized listing', () => {
-		assert.equal(
-			resolveToolName('data-grout@1/discovery_perform@1', ['discovery_perform']),
-			'discovery_perform',
-		);
-	});
-
-	it('is punctuation- and case-insensitive', () => {
-		assert.equal(resolveToolName('SOQL', ['salesforce@1/soql@1']), 'salesforce@1/soql@1');
-	});
-
-	it('refuses an ambiguous partial rather than guessing', () => {
-		// "discovery" matches both plan and perform → caller gets the catalogue
-		assert.equal(resolveToolName('discovery', available), undefined);
-	});
-
-	it('refuses very short fragments that would over-match', () => {
-		assert.equal(resolveToolName('so', available), undefined);
-	});
-
-	it('returns undefined for an empty or punctuation-only request', () => {
-		assert.equal(resolveToolName('', available), undefined);
-		assert.equal(resolveToolName('@@@', available), undefined);
-	});
-
-	it('returns undefined when nothing resembles the request', () => {
-		assert.equal(resolveToolName('quickbooks_invoices', available), undefined);
-	});
-
-	it('prefers the exact normalized match over a partial one', () => {
-		// 'search' exists exactly AND is a substring of the jira tool name
-		const list = ['search', 'atlassian-jira@1/searchjiraissuesusingjql@1'];
-		assert.equal(resolveToolName('search', list), 'search');
-	});
-});
-
-describe('describeTools', () => {
-	it('truncates long descriptions', () => {
-		const long = 'x'.repeat(MAX_DESCRIPTION_CHARS + 50);
-		const [only] = describeTools([{ name: 'a', description: long }]);
-		assert.equal((only.description as string).length, MAX_DESCRIPTION_CHARS + 1); // + ellipsis
-		assert.ok((only.description as string).endsWith('…'));
-	});
-
-	it('leaves short descriptions intact', () => {
-		const [only] = describeTools([{ name: 'a', description: 'short' }]);
-		assert.equal(only.description, 'short');
-	});
-
-	it('caps the catalogue so a large server cannot flood the model', () => {
-		const many = Array.from({ length: MAX_LISTED_TOOLS + 25 }, (_, i) => ({
-			name: `tool_${i}`,
-			description: '',
-		}));
-		assert.equal(describeTools(many).length, MAX_LISTED_TOOLS);
-	});
-});
-
-describe('toOutputJson', () => {
-	it('prefers structuredContent so workflows can map real fields', () => {
-		const sc = { total: 3, rows: [1, 2, 3] };
-		assert.deepEqual(toOutputJson({ structuredContent: sc, content: [] }), sc);
-	});
-
-	it('falls back to flattened text when there is no structuredContent', () => {
-		const res = { content: [{ type: 'text', text: 'hello' }] };
-		assert.deepEqual(toOutputJson(res), { result: 'hello' });
-	});
-
-	it('does not treat an array structuredContent as node JSON', () => {
-		const res = { structuredContent: [1, 2], content: [{ type: 'text', text: 'hi' }] };
-		assert.deepEqual(toOutputJson(res), { result: 'hi' });
-	});
-});
-
-describe('formatToolResult', () => {
-	it('joins text blocks', () => {
-		const res = {
-			content: [
-				{ type: 'text', text: 'line one' },
-				{ type: 'text', text: 'line two' },
-			],
+	it('parses rows out of a nested text content block', () => {
+		const payload = {
+			_dg: { tool: 'data-grout@1/prism.refract@1' },
+			data: {
+				content: [{ type: 'text', text: JSON.stringify(rows), annotations: {} }],
+				status_code: 200,
+			},
+			status_code: 200,
 		};
-		assert.equal(formatToolResult(res), 'line one\nline two');
+		assert.deepEqual(unwrapData(payload), rows);
 	});
 
-	it('serialises non-text blocks', () => {
-		assert.equal(
-			formatToolResult({ content: [{ type: 'image', data: 'xyz' }] }),
-			'{"type":"image","data":"xyz"}',
-		);
+	it('prefers a nested structuredContent value when present', () => {
+		const payload = { data: { structuredContent: { data: rows }, content: [] } };
+		assert.deepEqual(unwrapData(payload), rows);
 	});
 
-	it('falls back to the whole result when content is empty', () => {
-		assert.equal(formatToolResult({ content: [], ok: true }), '{"content":[],"ok":true}');
+	it('accepts a nested result key too', () => {
+		const payload = { data: { structuredContent: { result: rows } } };
+		assert.deepEqual(unwrapData(payload), rows);
 	});
 
-	it('never returns an empty string', () => {
-		assert.notEqual(formatToolResult({}), '');
-	});
-});
-
-describe('errorText', () => {
-	it('reads the first text block', () => {
-		const res = { isError: true, content: [{ type: 'text', text: 'boom' }] };
-		assert.equal(errorText(res), 'boom');
+	it('returns non-JSON text as text rather than throwing', () => {
+		const payload = { data: { content: [{ type: 'text', text: 'no rows found' }] } };
+		assert.equal(unwrapData(payload), 'no rows found');
 	});
 
-	it('has a fallback when no text block is present', () => {
-		assert.equal(errorText({ isError: true, content: [] }), 'Tool returned an error');
-		assert.equal(errorText({ isError: true }), 'Tool returned an error');
+	it('leaves a payload without a nested response untouched', () => {
+		const payload = { count: 2, facts: [] };
+		assert.equal(unwrapData(payload), payload);
+	});
+
+	it('ignores a non-object data field', () => {
+		const payload = { data: 'plain' };
+		assert.equal(unwrapData(payload), payload);
 	});
 });
 
-describe('normalizeToolName', () => {
-	it('strips punctuation and case', () => {
-		assert.equal(normalizeToolName('data-grout@1/Discovery.Plan@1'), 'datagrout1discoveryplan1');
+// DataGrout reports tool failures inside a 200 response. Live-caught: an Ask
+// whose plan 400'd came back as a null answer marked verified — the exact
+// confidently-wrong outcome this integration exists to avoid.
+describe('payloadError', () => {
+	it('finds a top-level error string', () => {
+		assert.equal(payloadError({ error: 'No payload provided', status_code: 400 }), 'No payload provided');
+	});
+
+	it('finds an error nested under data', () => {
+		assert.equal(payloadError({ data: { error: 'Bad request', status_code: 400 } }), 'Bad request');
+	});
+
+	it('reads an error object message', () => {
+		assert.equal(payloadError({ error: { message: 'boom' } }), 'boom');
+	});
+
+	it('falls back to a bad status code alone', () => {
+		assert.equal(payloadError({ status_code: 503 }), 'DataGrout returned status 503');
+	});
+
+	it('is silent on success', () => {
+		assert.equal(payloadError({ status_code: 200, data: { status_code: 200 } }), undefined);
+		assert.equal(payloadError({ count: 2, facts: [] }), undefined);
+		assert.equal(payloadError(undefined), undefined);
+	});
+
+	it('ignores an empty error string', () => {
+		assert.equal(payloadError({ error: '   ' }), undefined);
+	});
+});
+
+describe('shapeAnswer never marks a failure verified', () => {
+	it('reports verified false when the payload carries an error', () => {
+		const shaped = shapeAnswer({ error: 'No payload provided', status_code: 400 });
+		assert.equal(shaped.verified, false);
+		assert.equal(shaped.answer, null);
+	});
+});
+
+// Frame shapes captured from the live WebSocket transport 2026-08-27. The
+// lifecycle case matters most: session.ready arrives on every connect, and
+// emitting it would start the workflow whenever the socket reconnected.
+describe('subscriptionEvent', () => {
+	it('emits a subscription event', () => {
+		const frame = {
+			jsonrpc: '2.0',
+			method: 'notification',
+			params: {
+				subscription: 'sub_abc',
+				event: 'run.completed',
+				data: { run_id: 'run_1', status: 'ok' },
+			},
+		};
+		assert.deepEqual(subscriptionEvent(frame), {
+			event: 'run.completed',
+			data: { run_id: 'run_1', status: 'ok' },
+		});
+	});
+
+	it('ignores session.ready, which carries no subscription', () => {
+		const frame = {
+			jsonrpc: '2.0',
+			method: 'notification',
+			params: { event: 'session.ready', data: { session_id: 'ws_1' } },
+		};
+		assert.equal(subscriptionEvent(frame), undefined);
+	});
+
+	it('ignores a reply to our own call', () => {
+		assert.equal(subscriptionEvent({ id: 1, jsonrpc: '2.0', result: {} }), undefined);
+	});
+
+	it('ignores another subscription on the same socket', () => {
+		const frame = {
+			method: 'notification',
+			params: { subscription: 'sub_other', event: 'x', data: {} },
+		};
+		assert.equal(subscriptionEvent(frame, 'sub_ours'), undefined);
+	});
+
+	it('accepts a matching subscription id', () => {
+		const frame = {
+			method: 'notification',
+			params: { subscription: 'sub_ours', event: 'x', data: { a: 1 } },
+		};
+		assert.deepEqual(subscriptionEvent(frame, 'sub_ours'), { event: 'x', data: { a: 1 } });
+	});
+
+	it('names an unnamed event rather than emitting undefined', () => {
+		const frame = { method: 'notification', params: { subscription: 's', data: {} } };
+		assert.equal(subscriptionEvent(frame)?.event, 'event');
+	});
+});
+
+describe('subscribeAck', () => {
+	it('reads the subscription id out of the ack', () => {
+		const frame = {
+			id: 1,
+			jsonrpc: '2.0',
+			result: { topic: 't', subscription: 'sub_abc', scoped_topic: 'ws:x:t' },
+		};
+		assert.equal(subscribeAck(frame), 'sub_abc');
+	});
+
+	it('is not confused by a notification', () => {
+		assert.equal(subscribeAck({ method: 'notification', params: {} }), undefined);
+	});
+
+	it('returns undefined when the reply carries no subscription', () => {
+		assert.equal(subscribeAck({ id: 2, result: { ok: true } }), undefined);
+	});
+});
+
+// The four slugs DataGrout publishes to ws:<server>:events, verified against
+// DataGrout.WsEvents.events/0.
+describe('matchesEvent', () => {
+	it('passes every event when nothing is selected', () => {
+		assert.equal(matchesEvent('run.completed', []), true);
+		assert.equal(matchesEvent('anything.new', []), true);
+	});
+
+	it('passes every event when the selection is absent', () => {
+		assert.equal(matchesEvent('run.completed', undefined), true);
+	});
+
+	it('passes a selected event', () => {
+		assert.equal(matchesEvent('task.failed', ['run.completed', 'task.failed']), true);
+	});
+
+	it('rejects an event that was not selected', () => {
+		assert.equal(matchesEvent('run.completed', ['task.failed']), false);
+	});
+
+	it('does not match on a prefix', () => {
+		assert.equal(matchesEvent('task.completed', ['task']), false);
+	});
+});
+
+// Shapes taken from DataGrout's loop guard in mcp_server.ex. Two of the three
+// interventions are not flagged as errors, so they would otherwise be handed to
+// a workflow as the answer. The read-tier one below is the exact payload a live
+// run produced on 2026-09-01.
+describe('interventionNotice', () => {
+	it('catches the read-tier loop that arrives as a success', () => {
+		const live = {
+			action: 'possible_loop',
+			consequence_tier: 'read',
+			execution_count: 4,
+			loop_detected: true,
+		};
+		const notice = interventionNotice(live);
+		assert.ok(notice);
+		assert.match(notice, /loop\s+guard stopped it/);
+		assert.match(notice, /4 times/);
+	});
+
+	it('catches the write-confirmation gate', () => {
+		const notice = interventionNotice({
+			loop_detected: true,
+			consequence_tier: 'write',
+			execution_count: 2,
+			action: 'confirm_or_change_args',
+			original_receipt_id: 'rcpt_1',
+		});
+		assert.ok(notice);
+		assert.match(notice, /was not repeated/);
+		assert.match(notice, /2 times/);
+	});
+
+	it('catches a write-tier loop', () => {
+		const notice = interventionNotice({
+			loop_detected: true,
+			consequence_tier: 'write',
+			execution_count: 3,
+			action: 'use_previous_result',
+		});
+		assert.ok(notice);
+	});
+
+	it('copes with a missing count', () => {
+		const notice = interventionNotice({ loop_detected: true, action: 'possible_loop' });
+		assert.match(notice as string, /more than once/);
+	});
+
+	it('is silent on an ordinary payload', () => {
+		assert.equal(interventionNotice({ result: 42 }), undefined);
+		assert.equal(interventionNotice({ loop_detected: false }), undefined);
+		assert.equal(interventionNotice(undefined), undefined);
+	});
+});
+
+describe('payloadError surfaces an intervention as a failure', () => {
+	it('fails rather than handing the intervention to the workflow', () => {
+		const live = {
+			action: 'possible_loop',
+			consequence_tier: 'read',
+			execution_count: 4,
+			loop_detected: true,
+		};
+		assert.match(payloadError(live) as string, /loop\s+guard stopped it/);
+	});
+
+	it('finds one nested under data', () => {
+		assert.ok(payloadError({ data: { loop_detected: true, action: 'possible_loop' } }));
+	});
+
+	it('never reports an intervention as a verified answer', () => {
+		const shaped = shapeAnswer({
+			loop_detected: true,
+			action: 'possible_loop',
+			execution_count: 5,
+			answer_confidence: 'high',
+		});
+		assert.equal(shaped.verified, false);
 	});
 });

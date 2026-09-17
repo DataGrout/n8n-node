@@ -50,11 +50,13 @@
     },
     {
       "parameters": {
-        "toolsToInclude": "all"
+        "authentication": "apiToken",
+        "resource": "answer",
+        "operation": "ask"
       },
       "id": "dgmcp1",
-      "name": "DataGrout MCP",
-      "type": "@datagrout/n8n-nodes-datagrout-mcp.dataGroutMcpTool",
+      "name": "DataGrout",
+      "type": "@datagrout/n8n-nodes-datagrout.dataGrout",
       "typeVersion": 1,
       "position": [
         420,
@@ -91,7 +93,7 @@
         ]
       ]
     },
-    "DataGrout MCP": {
+    "DataGrout": {
       "ai_tool": [
         [
           {

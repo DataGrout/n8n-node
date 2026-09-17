@@ -1,3 +1,46 @@
+## [0.4.0] — unreleased
+
+**Breaking.** The node is now organised around DataGrout operations instead of
+raw tool calls, and talks to DataGrout's JSON-RPC API rather than MCP. Existing
+workflows using the old *DataGrout MCP* node need to be repointed at the new
+**DataGrout** node.
+
+### Added
+- **DataGrout Trigger** — starts a workflow when DataGrout pushes an event, over
+  one multiplexed WebSocket. Subscribes once to the server's event stream and
+  filters by event (`run.completed`, `task.completed`, `task.failed`,
+  `tool_call.failed`), emits one item per event,
+  filters connection lifecycle frames so a reconnect does not fire the workflow,
+  holds the connection open with a keepalive, and reopens a dropped one with a
+  backing-off delay. Requires Node 22+.
+- **Answer → Ask** — a question in plain language returns a verified answer, a
+  caveat when DataGrout could not verify it, and a certificate URL.
+- **Data → Transform** — server-side compute over inline data or a reference,
+  returning one item per record.
+- **Memory → Remember / Recall** — facts that persist across executions, and
+  recall that includes what can be inferred from them.
+- **Skill → Run** — re-run previously verified work.
+- **API Token authentication** alongside OAuth2, selectable on the node.
+- The transport a node needs is switched on automatically the first time a
+  workflow uses it — JSON-RPC on the node's first call, WebSocket when the
+  trigger starts — so nothing needs configuring in the DataGrout dashboard.
+  Both are logged, so a change to your server's settings is never silent.
+  Testing a credential only reads, and changes nothing.
+
+### Changed
+- Tool names are gone from the interface. Operations are named for what they do.
+- A loop-guard intervention now fails the node instead of arriving as the answer.
+  DataGrout answers an identical call repeated with nothing changing in between
+  with an explanation rather than a result, and two of those replies are not
+  marked as errors — so a downstream node expecting rows used to receive
+  `{loop_detected: true, …}` as its data. The message says what happened and how
+  to proceed.
+- A tool-level failure reported inside a success response now fails the node,
+  instead of returning an empty answer marked verified.
+
+### Removed
+- The **DataGrout MCP** node and its `List Tools` / `Execute Tool` operations.
+
 ## [0.3.1] - 2026-08-17
 
 The gateway now serves every account from one global endpoint, and connecting is
