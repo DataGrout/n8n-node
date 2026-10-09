@@ -167,13 +167,13 @@ function tickingHarness(limit: number) {
 	return { h, state };
 }
 
-// Frames captured from wss://gateway.datagrout.ai on 2026-08-27.
+// Frame shapes captured from wss://gateway.datagrout.ai on 2026-08-27, with every id and value replaced.
 const SESSION_READY = {
 	jsonrpc: '2.0',
 	method: 'notification',
 	params: {
 		event: 'session.ready',
-		data: { session_id: 'ws_nH_7D6NqvPeoPNFW', subprotocol: 'datagrout-jsonrpc.v1' },
+		data: { session_id: 'ws_Fict0000Session', subprotocol: 'datagrout-jsonrpc.v1' },
 	},
 };
 
@@ -190,7 +190,7 @@ const event = (subscription: string, name: string, data: Record<string, unknown>
 });
 
 const RUN_COMPLETED = {
-	run_id: 79566,
+	run_id: 4127,
 	execution_id: null,
 	status: 'success',
 	tool_name: 'data-grout@1/prism.refract@1',
@@ -222,8 +222,8 @@ describe('startEventSession — connecting', () => {
 	it('records the subscription id from the ack', () => {
 		const h = harness();
 		h.socket().open();
-		h.socket().deliver(ack('sub_9Pfi7pPohro'));
-		assert.ok(h.logs.info.some((m) => m.includes('sub_9Pfi7pPohro')));
+		h.socket().deliver(ack('sub_Fict0001'));
+		assert.ok(h.logs.info.some((m) => m.includes('sub_Fict0001')));
 		h.close();
 	});
 });

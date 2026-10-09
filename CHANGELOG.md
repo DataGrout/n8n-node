@@ -1,45 +1,49 @@
 ## [0.4.0] — unreleased
 
 **Breaking.** The node is now organised around DataGrout operations instead of
-raw tool calls, and talks to DataGrout's JSON-RPC API rather than MCP. Existing
+raw tool calls, and calls DataGrout's REST API rather than MCP. Existing
 workflows using the old *DataGrout MCP* node need to be repointed at the new
 **DataGrout** node.
 
 ### Added
-- **DataGrout Trigger** — starts a workflow when DataGrout pushes an event, over
-  one multiplexed WebSocket. Subscribes once to the server's event stream and
-  filters by event (`run.completed`, `task.completed`, `task.failed`,
-  `tool_call.failed`), emits one item per event,
-  filters connection lifecycle frames so a reconnect does not fire the workflow,
-  holds the connection open with a keepalive, and reopens a dropped one with a
-  backing-off delay. Requires Node 22+.
-- **Answer → Ask** — a question in plain language returns a verified answer, a
-  caveat when DataGrout could not verify it, and a certificate URL.
+- **Answer → Ask** — a question in plain language returns an answer, whether
+  DataGrout's verifier accepted it, a certificate showing what ran, and a skill
+  id to run the same work again.
 - **Data → Transform** — server-side compute over inline data or a reference,
-  returning one item per record.
+  returning one item per row, or the whole response with **Split Rows Into
+  Items** off.
 - **Memory → Remember / Recall** — facts that persist across executions, and
-  recall that includes what can be inferred from them.
-- **Skill → Run** — re-run previously verified work.
-- **API Token authentication** alongside OAuth2, selectable on the node.
-- The transport a node needs is switched on automatically the first time a
-  workflow uses it — JSON-RPC on the node's first call, WebSocket when the
-  trigger starts — so nothing needs configuring in the DataGrout dashboard.
-  Both are logged, so a change to your server's settings is never silent.
-  Testing a credential only reads, and changes nothing.
+  recall that includes what can be inferred from them. Memory Name defaults to
+  `default`, the memory DataGrout uses when none is named.
+- **Skill → Run** — re-run previously verified work, by a saved skill's id or the
+  Skill ID an Ask returned.
+- **DataGrout Trigger** — starts a workflow when DataGrout pushes an event, over
+  one multiplexed WebSocket. Subscribes once to the server's event stream,
+  filters by event (`run.completed`, `task.completed`, `task.failed`,
+  `tool_call.failed`), emits one item per event, filters connection lifecycle
+  frames so a reconnect does not fire the workflow, holds the connection open
+  with a keepalive, and reopens a dropped one with a backing-off delay. It
+  switches on the WebSocket transport when it starts, and logs that it did.
+  Requires Node 22+.
+- **API Token authentication** alongside OAuth2, selectable on the node. With
+  OAuth2 there is still nothing to fill in: DataGrout resolves the server from
+  the connected account.
 
 ### Changed
-- Tool names are gone from the interface. Operations are named for what they do.
-- A loop-guard intervention now fails the node instead of arriving as the answer.
-  DataGrout answers an identical call repeated with nothing changing in between
-  with an explanation rather than a result, and two of those replies are not
-  marked as errors — so a downstream node expecting rows used to receive
-  `{loop_detected: true, …}` as its data. The message says what happened and how
-  to proceed.
-- A tool-level failure reported inside a success response now fails the node,
-  instead of returning an empty answer marked verified.
+- Tool names and tool result handling are gone from the node. Each operation is
+  one REST call whose response has named fields, and slow work is followed by
+  polling the task the API returns.
+- An answer DataGrout could not verify is returned as `verified: false`, with
+  what the plan found beside it, instead of failing the node — so a workflow can
+  branch on it.
+- Errors carry DataGrout's own message: a repeated identical request the loop
+  guard declined, a skill that is unknown or has expired, a connected system
+  failing.
+- Testing the API Token credential only reads, and costs nothing.
 
 ### Removed
-- The **DataGrout MCP** node and its `List Tools` / `Execute Tool` operations.
+- The **DataGrout MCP** node: its `List Tools` / `Execute Tool` operations and
+  the **Tools to Allow** filter.
 
 ## [0.3.1] - 2026-08-17
 

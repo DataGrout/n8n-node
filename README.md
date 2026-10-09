@@ -15,13 +15,16 @@ Two nodes:
 | **DataGrout** | Ask questions, compute over data, store and recall facts, re-run verified work. Also works on an AI Agent's Tool connector. |
 | **DataGrout Trigger** | Start a workflow when a DataGrout run or background task finishes or fails. |
 
+The DataGrout node calls DataGrout's [REST API](https://library.datagrout.ai/rest-api).
 No runtime dependencies.
 
 ## What you get that a plain HTTP call does not
 
-- **A verified answer, or an admission.** Every answer carries whether DataGrout
-  could verify it and a certificate URL showing the steps that produced it. A
-  result that failed verification arrives as an error, not as a confident null.
+- **A verified answer, or an admission.** Every answer says whether DataGrout's
+  verifier accepted it, with a certificate showing the steps that produced it.
+  An answer it could not verify arrives as `verified: false`, with `answer` empty
+  and what the plan found under `unverified_answer` — never as a confident
+  answer — so a workflow can branch on it instead of trusting it.
 - **Memory that outlives the execution.** Facts stored in one run are still there
   in the next, and in other workflows pointed at the same memory.
 - **Compute that stays next to the data.** A large result never has to travel
@@ -36,7 +39,18 @@ No runtime dependencies.
 | **Answer** | Ask | Ask in plain language. DataGrout plans, runs and verifies, and returns the answer plus a certificate URL. |
 | **Data** | Transform | Describe the result you want; DataGrout computes it on its own servers and returns records, one item per row. |
 | **Memory** | Recall / Remember | Store facts as workflows run, then ask what is known — including what can be inferred from it. |
-| **Skill** | Run | Re-run work DataGrout has already verified. No planning, so it is fast and repeatable. |
+| **Skill** | Run | Re-run work DataGrout has already verified — a saved skill (`skill_…`), or the Skill ID an Ask returned. No planning, so it is fast and repeatable. |
+
+### What Ask returns
+
+| Field | |
+|---|---|
+| `answer` | The answer, or empty when it could not be verified |
+| `verified` | Whether DataGrout's verifier accepted it |
+| `unverified_answer`, `caveat` | What the plan found, and why it could not be verified |
+| `certificate` | `id` and `url` of the certificate showing exactly what ran |
+| `skill_id` | Run this verified work again with **Skill → Run**. An id beginning `skill_` does not expire; when `skill_expires` is true it lasts an hour. |
+| `usage` | Credits charged and remaining |
 
 ### Why Transform is worth using
 
@@ -115,18 +129,15 @@ Choose either on the node's **Authentication** field.
 | Gateway Base URL | Leave as-is unless you self-host the gateway |
 
 **DataGrout OAuth2 API** — for instances that prefer an OAuth flow. Create the
-credential, click **Connect my account**, and there is nothing to fill in.
+credential, click **Connect my account**, and there is nothing to fill in: the
+token itself names the server it was granted.
 
-Testing a credential only reads — it lists the tools your server exposes and
-changes nothing.
+Testing a credential only reads — it fetches the server's name, changes nothing
+and costs nothing.
 
-DataGrout enables transports per server, and a new server has only MCP switched
-on. Rather than sending you to the dashboard, these nodes switch on the transport
-they need the first time a workflow actually uses it: the DataGrout node enables
-JSON-RPC on its first call, and the trigger enables WebSocket when it starts.
-Both are idempotent, and both are written to the n8n log so a change to your
-server's settings is never silent. Until then, a transport you have deliberately
-left off stays off.
+The trigger listens over DataGrout's WebSocket transport, which a new server has
+switched off. It switches it on when the trigger starts, and writes that to the
+n8n log, so a change to your server's settings is never silent.
 
 ## Using it with an AI Agent
 
@@ -137,9 +148,12 @@ question. Replace a field with a fixed value to pin it.
 ## Options
 
 - **Wait for Result** — DataGrout moves slow work to the background; the node
-  waits this long for the finished result. Set 0 to return immediately.
-- **Full Response** — return everything DataGrout sent rather than the tidied
-  answer.
+  waits this long for the finished result. Set 0 to return immediately with the
+  task to follow.
+
+On Transform, **Split Rows Into Items** (on by default) outputs one item per row
+of the result. Turn it off to get the whole response as one item, with its
+certificate and reference.
 
 On the trigger:
 
