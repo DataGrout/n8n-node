@@ -11,6 +11,7 @@ import {
 	EVENTS_TOPIC,
 	SUBPROTOCOL,
 	exampleEvent,
+	prepareEventSocket,
 	startEventSession,
 } from '../DataGrout/pure';
 
@@ -27,17 +28,6 @@ import {
 // a network or the n8n runtime. What remains here is the adapter:
 // read parameters, supply a real socket, hand n8n its two callbacks.
 // ────────────────────────────────────────────────────────────────────
-
-type Credentials = {
-	apiToken?: string;
-	serverId?: string;
-	baseUrl?: string;
-	oauthTokenData?: { access_token?: string };
-};
-
-function bearer(credentials: Credentials): string | undefined {
-	return credentials.oauthTokenData?.access_token ?? credentials.apiToken;
-}
 
 // A trigger starts workflows and is never called by an agent. The property's
 // type only accepts `true`, so it is omitted rather than set to false.
@@ -165,7 +155,6 @@ export class DataGroutTrigger implements INodeType {
 
 		const authentication = this.getNodeParameter('authentication', 'apiToken') as string;
 		const credentialName = authentication === 'oAuth2' ? 'dataGroutOAuth2Api' : 'dataGroutApi';
-		const credentials = (await this.getCredentials(credentialName)) as Credentials;
 
 		const wanted = this.getNodeParameter('events', []) as string[];
 		const options = this.getNodeParameter('options', {}) as IDataObject;
@@ -173,55 +162,20 @@ export class DataGroutTrigger implements INodeType {
 		const reconnect = (options.reconnect as boolean) ?? true;
 		const topic = String(options.topic ?? EVENTS_TOPIC).trim() || EVENTS_TOPIC;
 
-		const token = bearer(credentials);
-		if (!token) {
-			throw new NodeOperationError(this.getNode(), 'The DataGrout credential has no token');
-		}
-
-		const baseUrl = String(credentials.baseUrl ?? 'https://gateway.datagrout.ai').replace(
-			/\/$/,
-			'',
-		);
-		const serverId = String(credentials.serverId ?? '');
-		if (!serverId) {
-			throw new NodeOperationError(
-				this.getNode(),
-				'The DataGrout credential is missing its Server ID',
-			);
-		}
-
-		// DataGrout gates transports per server, so make sure the WebSocket
-		// transport is on before dialling. Idempotent, and it keeps setup out of
-		// the dashboard.
-		//
-		// This changes a setting on the user's own server, so it is logged rather
-		// than done silently — and it happens on activation, when the user has
-		// asked for this trigger to run, rather than when they test a credential.
-		for (const protocol of ['ws', 'jsonrpc']) {
-			try {
-				const result = (await this.helpers.httpRequestWithAuthentication.call(
-					this,
-					credentialName,
-					{
-						method: 'POST',
-						url: `${baseUrl}/servers/${serverId}/interaction/enable_protocol`,
-						body: { protocol },
-						json: true,
-					},
-				)) as IDataObject;
-				const enabled = result?.enabled_protocols;
-				this.logger.info(
-					`[DataGrout Trigger] "${protocol}" transport enabled on server ${serverId}` +
-						(Array.isArray(enabled) ? ` (now: ${enabled.join(', ')})` : ''),
-				);
-			} catch (error) {
-				this.logger.warn(
-					`[DataGrout Trigger] could not enable "${protocol}": ${(error as Error).message}`,
-				);
-			}
-		}
-
-		const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/servers/${serverId}/ws`;
+		const target = await prepareEventSocket({
+			credentials: await this.getCredentials(credentialName),
+			request: async (method, url, body) =>
+				(await this.helpers.httpRequestWithAuthentication.call(this, credentialName, {
+					method,
+					url,
+					body,
+					json: true,
+				})) as IDataObject,
+			readCredentials: async () => await this.getCredentials(credentialName),
+			log: this.logger,
+		}).catch((error: Error) => {
+			throw new NodeOperationError(this.getNode(), error);
+		});
 
 		const session = startEventSession({
 			topic,
@@ -235,8 +189,8 @@ export class DataGroutTrigger implements INodeType {
 			// the bearer token reaches the upgrade request, which the standard API
 			// gives no way to do.
 			connect: () =>
-				new WebSocket(wsUrl, {
-					headers: { Authorization: `Bearer ${token}` },
+				new WebSocket(target.url, {
+					headers: { Authorization: `Bearer ${target.token}` },
 					protocols: [SUBPROTOCOL],
 				} as unknown as string[]),
 			openState: WebSocket.OPEN,

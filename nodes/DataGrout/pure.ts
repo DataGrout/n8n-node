@@ -435,3 +435,73 @@ export function startEventSession(options: SessionOptions): Session {
 		},
 	};
 }
+
+// ── Trigger activation ──────────────────────────────────────────────
+
+export interface ActivationOptions {
+	credentials: IDataObject;
+	/** An authenticated request through n8n, which refreshes an expired OAuth2 token. */
+	request: (method: 'GET' | 'POST', url: string, body?: IDataObject) => Promise<IDataObject>;
+	/** The credentials as stored now, after any refresh `request` caused. */
+	readCredentials: () => Promise<IDataObject>;
+	log: Pick<SessionLogger, 'info' | 'warn'>;
+}
+
+export interface EventSocketTarget {
+	url: string;
+	token: string;
+}
+
+function bearerOf(credentials: IDataObject): string | undefined {
+	const oauth = credentials.oauthTokenData as IDataObject | undefined;
+	const token = oauth?.access_token ?? credentials.apiToken;
+	return typeof token === 'string' && token ? token : undefined;
+}
+
+/**
+ * Everything the trigger does before it dials: find the server, make sure it
+ * accepts WebSockets, and pick up the token to present.
+ */
+export async function prepareEventSocket(options: ActivationOptions): Promise<EventSocketTarget> {
+	const { credentials, request, log } = options;
+	const origin = gatewayOrigin(credentials);
+
+	// An OAuth2 credential has no Server ID: the server is the one the user
+	// picked at consent, and the token names it.
+	let serverId = String(credentials.serverId ?? '').trim();
+	if (!serverId) {
+		const found = await request('GET', `${origin}/api/v1/server`).then(
+			(server) => ({ id: String(server.id ?? '') }),
+			(error: Error) => ({ error }),
+		);
+		if ('error' in found) {
+			throw new Error(
+				`Could not find which DataGrout server this credential belongs to: ${found.error.message}`,
+			);
+		}
+		serverId = found.id;
+		if (!serverId) throw new Error('DataGrout did not say which server this credential belongs to');
+	}
+	const server = `${origin}/servers/${encodeURIComponent(serverId)}`;
+
+	// DataGrout gates transports per server. Switching WebSocket on here keeps
+	// setup out of the dashboard; it changes the user's own server, so it is
+	// logged, and it happens only when they activate the trigger.
+	try {
+		const result = await request('POST', `${server}/interaction/enable_protocol`, { protocol: 'ws' });
+		const enabled = result?.enabled_protocols;
+		log.info(
+			`[DataGrout Trigger] WebSocket transport enabled on server ${serverId}` +
+				(Array.isArray(enabled) ? ` (now: ${enabled.join(', ')})` : ''),
+		);
+	} catch (error) {
+		log.warn(
+			`[DataGrout Trigger] could not enable the WebSocket transport: ${(error as Error).message}`,
+		);
+	}
+
+	const token = bearerOf(await options.readCredentials());
+	if (!token) throw new Error('The DataGrout credential has no token');
+
+	return { url: `${server.replace(/^http/, 'ws')}/ws`, token };
+}
