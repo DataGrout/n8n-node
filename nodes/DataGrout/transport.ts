@@ -1,204 +1,133 @@
 import type {
 	IDataObject,
 	IExecuteFunctions,
+	IHttpRequestMethods,
 	IHttpRequestOptions,
-	ILoadOptionsFunctions,
+	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError, sleep } from 'n8n-workflow';
+import { NodeApiError, sleep } from 'n8n-workflow';
 
-import { detachedTaskRef, isProtocolDisabled, taskRecord } from './pure';
+import {
+	apiBase,
+	apiErrorMessage,
+	apiErrorType,
+	gatewayOrigin,
+	taskLocation,
+	waitPreference,
+} from './pure';
 
 // ────────────────────────────────────────────────────────────────────
-// DataGrout JSON-RPC 2.0 transport.
+// Client for DataGrout's REST API.
 //
-// Built on n8n's own `helpers.httpRequestWithAuthentication` so the node
+// Built on n8n's own `helpers.httpRequestWithAuthentication`, so the node
 // carries no runtime dependencies and inherits the instance's proxy and
 // TLS configuration.
 // ────────────────────────────────────────────────────────────────────
 
-export const DEFAULT_TIMEOUT_MS = 60_000;
-export const DEFAULT_TASK_WAIT_MS = 120_000;
+export const DEFAULT_WAIT_MS = 120_000;
 
-type Ctx = IExecuteFunctions | ILoadOptionsFunctions;
+const REQUEST_TIMEOUT_MS = 60_000;
+const POLL_INTERVAL_MS = 2_000;
 
-const TASKS_WAIT = 'data-grout@1/tasks.wait@1';
-
-/** Which credential the node is configured to use. */
-async function authContext(ctx: Ctx, itemIndex = 0) {
-	const kind =
-		((ctx as IExecuteFunctions).getNodeParameter?.('authentication', itemIndex, 'apiToken') as
-			| string
-			| undefined) ?? 'apiToken';
-	const name = kind === 'oAuth2' ? 'dataGroutOAuth2Api' : 'dataGroutApi';
-	const credentials = await ctx.getCredentials(name);
-	const baseUrl = String(credentials.baseUrl ?? 'https://gateway.datagrout.ai').replace(/\/$/, '');
-	return { name, baseUrl, serverId: String(credentials.serverId ?? '') };
+interface Connection {
+	credential: string;
+	origin: string;
+	base: string;
 }
 
-async function request(
-	ctx: Ctx,
+async function connection(ctx: IExecuteFunctions, itemIndex: number): Promise<Connection> {
+	const kind = ctx.getNodeParameter('authentication', itemIndex, 'apiToken') as string;
+	const credential = kind === 'oAuth2' ? 'dataGroutOAuth2Api' : 'dataGroutApi';
+	const credentials = await ctx.getCredentials(credential, itemIndex);
+	const origin = gatewayOrigin(credentials);
+	return { credential, origin, base: apiBase(origin, credentials.serverId) };
+}
+
+async function send(
+	ctx: IExecuteFunctions,
+	credential: string,
 	options: IHttpRequestOptions,
-	credentialName: string,
-): Promise<IDataObject> {
-	return (await ctx.helpers.httpRequestWithAuthentication.call(
-		ctx,
-		credentialName,
-		options,
-	)) as IDataObject;
-}
+	itemIndex: number,
+): Promise<{ status: number; body: unknown }> {
+	const response = (await ctx.helpers.httpRequestWithAuthentication.call(ctx, credential, {
+		...options,
+		json: true,
+		timeout: REQUEST_TIMEOUT_MS,
+		returnFullResponse: true,
+		ignoreHttpStatusErrors: true,
+	})) as { statusCode: number; body: unknown };
 
-/**
- * Turn the JSON-RPC transport on for this server. DataGrout ships with only
- * MCP enabled, and this endpoint is idempotent and self-service, so the node
- * can enable what it needs instead of asking the user to find a toggle.
- *
- * This changes a setting on the user's own server, so it is logged rather than
- * done silently. It happens only when a workflow is actually running — never
- * from a credential test — so that leaving the transport switched off stays
- * meaningful right up to the moment someone asks DataGrout to do something.
- */
-export async function enableJsonRpc(ctx: Ctx, itemIndex = 0): Promise<void> {
-	const { name, baseUrl, serverId } = await authContext(ctx, itemIndex);
-	await request(
-		ctx,
-		{
-			method: 'POST',
-			url: `${baseUrl}/servers/${serverId}/interaction/enable_protocol`,
-			body: { protocol: 'jsonrpc' },
-			json: true,
-			timeout: DEFAULT_TIMEOUT_MS,
-		},
-		name,
-	);
-	ctx.logger.info(
-		`[DataGrout] switched on the JSON-RPC transport for server ${serverId}, which was not enabled`,
-	);
-}
-
-let rpcId = 0;
-
-/**
- * One JSON-RPC call. If DataGrout reports the transport is disabled, enable it
- * and retry once — that turns a confusing first-run failure into a no-op.
- */
-export async function rpc(
-	ctx: Ctx,
-	method: string,
-	params: IDataObject,
-	itemIndex = 0,
-	timeoutMs = DEFAULT_TIMEOUT_MS,
-): Promise<IDataObject> {
-	const { name, baseUrl, serverId } = await authContext(ctx, itemIndex);
-
-	if (!serverId) {
-		throw new NodeOperationError(
-			ctx.getNode(),
-			'The DataGrout credential is missing its Server ID',
-			{ itemIndex },
-		);
-	}
-
-	const send = async (): Promise<IDataObject> =>
-		await request(
-			ctx,
-			{
-				method: 'POST',
-				url: `${baseUrl}/servers/${serverId}/rpc`,
-				body: { jsonrpc: '2.0', id: ++rpcId, method, params },
-				json: true,
-				timeout: timeoutMs,
-			},
-			name,
-		);
-
-	let response = await send();
-
-	if (isProtocolDisabled(response.error as IDataObject)) {
-		await enableJsonRpc(ctx, itemIndex);
-		response = await send();
-	}
-
-	if (response.error) {
-		const err = response.error as IDataObject;
-		throw new NodeApiError(ctx.getNode(), response as never, {
-			message: `DataGrout: ${err.message ?? 'request failed'}`,
-			description: typeof err.data === 'string' ? err.data : undefined,
+	if (response.statusCode >= 400) {
+		const type = apiErrorType(response.body);
+		throw new NodeApiError(ctx.getNode(), (response.body ?? {}) as JsonObject, {
+			message: `DataGrout: ${apiErrorMessage(response.body, response.statusCode)}`,
+			description: type ? `Error type: ${type}` : undefined,
+			httpCode: String(response.statusCode),
 			itemIndex,
 		});
 	}
 
-	return (response.result as IDataObject) ?? {};
+	return { status: response.statusCode, body: response.body };
 }
 
 /**
- * Call a DataGrout tool and return its payload, collecting the result of a
- * background task if the call detaches. The caller never sees a task
- * reference — a slow request simply takes longer.
+ * Call the API and return the finished resource.
+ *
+ * Slow work moves to a background task and the API answers 202. DataGrout is
+ * asked to hold the request for part of `waitMs` (`Prefer: wait`); if the work
+ * is still running, its task is polled for the rest. Past the deadline the
+ * node returns a `running` item naming the task rather than failing, so a
+ * workflow can pick the result up later.
  */
-export async function callTool(
-	ctx: Ctx,
-	toolName: string,
-	args: IDataObject,
-	itemIndex = 0,
-	waitMs = DEFAULT_TASK_WAIT_MS,
-): Promise<IDataObject> {
-	const result = await rpc(ctx, 'tools.call', { name: toolName, arguments: args }, itemIndex);
-
-	if (result.isError) {
-		const content = (result.content as IDataObject[]) ?? [];
-		const text = (content.find((c) => c.type === 'text')?.text as string) ?? 'Tool failed';
-		throw new NodeOperationError(ctx.getNode(), `DataGrout: ${text}`, { itemIndex });
-	}
-
-	const taskRef = detachedTaskRef((result.structuredContent as IDataObject) ?? result);
-	if (!taskRef || waitMs <= 0) return result;
-
-	return await collect(ctx, taskRef, itemIndex, waitMs);
-}
-
-async function collect(
-	ctx: Ctx,
-	taskRef: string,
+export async function call(
+	ctx: IExecuteFunctions,
+	method: IHttpRequestMethods,
+	path: string,
+	body: IDataObject | undefined,
 	itemIndex: number,
-	waitMs: number,
+	waitMs = DEFAULT_WAIT_MS,
 ): Promise<IDataObject> {
-	const deadline = Date.now() + waitMs;
-	let ref = taskRef;
+	const { credential, origin, base } = await connection(ctx, itemIndex);
+	const deadline = Date.now() + Math.max(0, waitMs);
+	const prefer = waitPreference(waitMs);
 
-	while (Date.now() < deadline) {
-		const waited = await rpc(
-			ctx,
-			'tools.call',
-			{ name: TASKS_WAIT, arguments: { task_ref: ref } },
+	const first = await send(
+		ctx,
+		credential,
+		{ method, url: base + path, body, headers: prefer ? { Prefer: prefer } : undefined },
+		itemIndex,
+	);
+	if (first.status !== 202) return (first.body ?? {}) as IDataObject;
+
+	const accepted = (first.body ?? {}) as IDataObject;
+	const location = taskLocation(accepted);
+	if (!location) {
+		throw new NodeApiError(ctx.getNode(), accepted as JsonObject, {
+			message: 'DataGrout: the work moved to the background but no task was given to follow',
 			itemIndex,
-		);
-		const task = taskRecord((waited.structuredContent as IDataObject) ?? waited);
-
-		if (task.completed === true && task.result && typeof task.result === 'object') {
-			return { structuredContent: task.result as IDataObject };
-		}
-		if (task.status === 'failed' || (task.error && task.completed === true)) {
-			return waited;
-		}
-		ref = (task.task_ref as string) ?? ref;
-		await sleep(1000);
+		});
 	}
 
-	// Out of budget. Say so plainly rather than returning a task stub the
-	// caller has no way to act on.
-	return {
-		structuredContent: {
-			status: 'running',
-			note:
-				'DataGrout is still working on this in the background. Increase "Wait for Result" ' +
-				'on this node, or run it again shortly — finished work is reused, so the retry is fast.',
-		},
-	};
-}
+	while (Date.now() + POLL_INTERVAL_MS <= deadline) {
+		await sleep(POLL_INTERVAL_MS);
+		const task = (await send(ctx, credential, { method: 'GET', url: origin + location }, itemIndex))
+			.body as IDataObject;
 
-/** Tool names the server exposes, for the credential test and dropdowns. */
-export async function listToolNames(ctx: Ctx): Promise<string[]> {
-	const result = await rpc(ctx, 'tools.list', {});
-	const tools = (result.tools as IDataObject[]) ?? [];
-	return tools.map((t) => String(t.name ?? '')).filter(Boolean);
+		if (task.status === 'completed') return (task.result ?? {}) as IDataObject;
+		if (task.status === 'failed' || task.status === 'cancelled') {
+			throw new NodeApiError(ctx.getNode(), task as JsonObject, {
+				message: `DataGrout: ${apiErrorMessage(task, 422)}`,
+				itemIndex,
+			});
+		}
+	}
+
+	return {
+		status: 'running',
+		task_id: accepted.task_id,
+		location: origin + location,
+		note:
+			'DataGrout is still working on this in the background. Increase "Wait for Result" on ' +
+			'this node, or fetch the task from its location later.',
+	};
 }

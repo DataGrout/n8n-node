@@ -7,23 +7,8 @@ import type {
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
-import {
-	parseJsonData,
-	parseJsonObject,
-	payloadError,
-	shapeAnswer,
-	toolPayload,
-	unwrapData,
-} from './pure';
-import { DEFAULT_TASK_WAIT_MS, callTool } from './transport';
-
-// The tools behind each operation. Users never see these — they pick an
-// operation, and the node knows which DataGrout capability serves it.
-const ASK = 'data-grout@1/discovery.plan@1';
-const TRANSFORM = 'data-grout@1/prism.refract@1';
-const REMEMBER = 'data-grout@1/logic.remember@1';
-const RECALL = 'data-grout@1/logic.query@1';
-const RUN_SKILL = 'data-grout@1/discovery.perform@1';
+import { apiPath, parseJsonData, parseJsonObject, rowsOf } from './pure';
+import { DEFAULT_WAIT_MS, call } from './transport';
 
 // Free-text fields default to $fromAI so the node works on an AI Agent's tool
 // connector with no extra setup; a workflow user overwrites the field with a
@@ -176,6 +161,15 @@ export class DataGrout implements INodeType {
 				displayOptions: { show: { resource: ['data'], inputMode: ['cacheRef'] } },
 				description: 'The reference returned by an earlier DataGrout step',
 			},
+			{
+				displayName: 'Split Rows Into Items',
+				name: 'splitRows',
+				type: 'boolean',
+				default: true,
+				displayOptions: { show: { resource: ['data'] } },
+				description:
+					'Whether to output one item per row of the result. Turn off to get the whole response as one item, with its certificate and reference.',
+			},
 
 			// ── Memory ──────────────────────────────────────────────────
 			{
@@ -224,10 +218,11 @@ export class DataGrout implements INodeType {
 				displayName: 'Memory Name',
 				name: 'namespace',
 				type: 'string',
-				default: '',
+				required: true,
+				default: 'default',
 				displayOptions: { show: { resource: ['memory'] } },
 				description:
-					'Keeps separate sets of facts apart — e.g. one per customer or project. Leave empty for the default memory.',
+					'Keeps separate sets of facts apart — e.g. one per customer or project. "default" is the memory DataGrout uses when none is named.',
 			},
 
 			// ── Skill ───────────────────────────────────────────────────
@@ -255,7 +250,8 @@ export class DataGrout implements INodeType {
 				required: true,
 				default: '',
 				displayOptions: { show: { resource: ['skill'] } },
-				description: 'The skill to run, as returned by an earlier Ask',
+				description:
+					'A saved skill\'s ID (skill_…), or the Skill ID an earlier Ask returned. A saved skill does not expire.',
 			},
 			{
 				displayName: 'Inputs',
@@ -278,17 +274,9 @@ export class DataGrout implements INodeType {
 						displayName: 'Wait for Result (Ms)',
 						name: 'waitForResult',
 						type: 'number',
-						default: DEFAULT_TASK_WAIT_MS,
+						default: DEFAULT_WAIT_MS,
 						description:
-							'DataGrout moves slow work to the background; the node waits this long for the finished result. Set 0 to return immediately.',
-					},
-					{
-						displayName: 'Full Response',
-						name: 'fullResponse',
-						type: 'boolean',
-						default: false,
-						description:
-							'Whether to return everything DataGrout sent, instead of the tidied answer',
+							'DataGrout moves slow work to the background; the node waits this long for the finished result. Set 0 to return immediately with the task to follow.',
 					},
 				],
 			},
@@ -303,61 +291,25 @@ export class DataGrout implements INodeType {
 			try {
 				const resource = this.getNodeParameter('resource', i) as string;
 				const options = this.getNodeParameter('options', i, {}) as IDataObject;
-				const waitMs = (options.waitForResult as number) ?? DEFAULT_TASK_WAIT_MS;
-				const full = (options.fullResponse as boolean) ?? false;
+				const waitMs = (options.waitForResult as number) ?? DEFAULT_WAIT_MS;
 
-				const json = (raw: unknown, field: string) => {
-					try {
-						return parseJsonObject(raw);
-					} catch (e) {
-						throw new NodeOperationError(this.getNode(), `${field}: ${(e as Error).message}`, {
-							itemIndex: i,
-						});
+				const text = (name: string, label: string): string => {
+					const value = String(this.getNodeParameter(name, i, '') ?? '').trim();
+					if (!value) {
+						throw new NodeOperationError(this.getNode(), `${label} is empty`, { itemIndex: i });
 					}
+					return value;
 				};
 
-				let result: IDataObject;
+				const emit = (json: IDataObject) => out.push({ json, pairedItem: { item: i } });
 
 				if (resource === 'answer') {
-					const question = String(this.getNodeParameter('question', i, '') ?? '').trim();
-					if (!question) {
-						throw new NodeOperationError(this.getNode(), 'Question is empty', { itemIndex: i });
-					}
-					result = await callTool(
-						this,
-						ASK,
-						{ goal: question, execute: true, verify: true, lean: true, head: true },
-						i,
-						waitMs,
-					);
-					const payload = toolPayload(result);
-					const failure = payloadError(payload);
-					if (failure) {
-						throw new NodeOperationError(this.getNode(), `DataGrout: ${failure}`, {
-							itemIndex: i,
-						});
-					}
-					out.push({
-						json: full ? payload : shapeAnswer(payload),
-						pairedItem: { item: i },
-					});
-					continue;
-				}
+					emit(await call(this, 'POST', '/answers', { question: text('question', 'Question') }, i, waitMs));
+				} else if (resource === 'data') {
+					const body: IDataObject = { goal: text('goal', 'Goal') };
 
-				if (resource === 'data') {
-					const goal = String(this.getNodeParameter('goal', i, '') ?? '').trim();
-					if (!goal) {
-						throw new NodeOperationError(this.getNode(), 'Goal is empty', { itemIndex: i });
-					}
-					const mode = this.getNodeParameter('inputMode', i, 'payload') as string;
-					const args: IDataObject = { goal };
-
-					if (mode === 'cacheRef') {
-						const ref = String(this.getNodeParameter('cacheRef', i, '') ?? '').trim();
-						if (!ref) {
-							throw new NodeOperationError(this.getNode(), 'Reference is empty', { itemIndex: i });
-						}
-						args.cache_ref = ref;
+					if (this.getNodeParameter('inputMode', i, 'payload') === 'cacheRef') {
+						body.reference = text('cacheRef', 'Reference');
 					} else {
 						let data: unknown;
 						try {
@@ -367,87 +319,44 @@ export class DataGrout implements INodeType {
 								itemIndex: i,
 							});
 						}
-						args.payload = data ?? items[i].json;
+						body.data = (data ?? items[i].json) as IDataObject;
 					}
 
-					result = await callTool(this, TRANSFORM, args, i, waitMs);
+					const transform = await call(this, 'POST', '/transforms', body, i, waitMs);
+					const split = this.getNodeParameter('splitRows', i, true) as boolean;
 
-					const transformFailure = payloadError(toolPayload(result));
-					if (transformFailure) {
-						throw new NodeOperationError(this.getNode(), `DataGrout: ${transformFailure}`, {
+					if (split && transform.status !== 'running') {
+						rowsOf(transform.result).forEach(emit);
+					} else {
+						emit(transform);
+					}
+				} else if (resource === 'memory') {
+					const name = text('namespace', 'Memory Name');
+
+					if (this.getNodeParameter('operation', i) === 'remember') {
+						const statement = text('statement', 'Fact');
+						emit(await call(this, 'POST', apiPath('memories', name, 'facts'), { statement }, i, waitMs));
+					} else {
+						const question = text('memoryQuestion', 'Question');
+						emit(await call(this, 'POST', apiPath('memories', name, 'recall'), { question }, i, waitMs));
+					}
+				} else if (resource === 'skill') {
+					let inputs: IDataObject | undefined;
+					try {
+						inputs = parseJsonObject(this.getNodeParameter('skillInputs', i, ''));
+					} catch (e) {
+						throw new NodeOperationError(this.getNode(), `Inputs: ${(e as Error).message}`, {
 							itemIndex: i,
 						});
 					}
 
-					if (!full) {
-						const value = unwrapData(toolPayload(result));
-						if (Array.isArray(value)) {
-							for (const row of value) {
-								out.push({
-									json: (row && typeof row === 'object' && !Array.isArray(row)
-										? row
-										: { result: row }) as IDataObject,
-									pairedItem: { item: i },
-								});
-							}
-						} else {
-							out.push({
-								json: (value && typeof value === 'object' && !Array.isArray(value)
-									? value
-									: { result: value }) as IDataObject,
-								pairedItem: { item: i },
-							});
-						}
-						continue;
-					}
-				} else if (resource === 'memory') {
-					const operation = this.getNodeParameter('operation', i) as string;
-					const namespace = String(this.getNodeParameter('namespace', i, '') ?? '').trim();
-					const args: IDataObject = {};
-					if (namespace) args.namespace = namespace;
-
-					if (operation === 'remember') {
-						const statement = String(this.getNodeParameter('statement', i, '') ?? '').trim();
-						if (!statement) {
-							throw new NodeOperationError(this.getNode(), 'Fact is empty', { itemIndex: i });
-						}
-						args.statement = statement;
-						result = await callTool(this, REMEMBER, args, i, waitMs);
-					} else {
-						const question = String(
-							this.getNodeParameter('memoryQuestion', i, '') ?? '',
-						).trim();
-						if (!question) {
-							throw new NodeOperationError(this.getNode(), 'Question is empty', { itemIndex: i });
-						}
-						args.question = question;
-						result = await callTool(this, RECALL, args, i, waitMs);
-					}
-				} else if (resource === 'skill') {
-					const handle = String(this.getNodeParameter('skillHandle', i, '') ?? '').trim();
-					if (!handle) {
-						throw new NodeOperationError(this.getNode(), 'Skill is empty', { itemIndex: i });
-					}
-					const inputs = json(this.getNodeParameter('skillInputs', i, ''), 'Inputs');
-					const args: IDataObject = { skill_handle: handle };
-					if (inputs) args.args = inputs;
-					result = await callTool(this, RUN_SKILL, args, i, waitMs);
+					const path = apiPath('skills', text('skillHandle', 'Skill'), 'runs');
+					emit(await call(this, 'POST', path, inputs ? { inputs } : {}, i, waitMs));
 				} else {
 					throw new NodeOperationError(this.getNode(), `Unknown resource "${resource}"`, {
 						itemIndex: i,
 					});
 				}
-
-				const payload = toolPayload(result);
-				const failure = payloadError(payload);
-				if (failure) {
-					throw new NodeOperationError(this.getNode(), `DataGrout: ${failure}`, { itemIndex: i });
-				}
-
-				out.push({
-					json: full ? result : payload,
-					pairedItem: { item: i },
-				});
 			} catch (error) {
 				if (this.continueOnFail()) {
 					out.push({ json: { error: (error as Error).message }, pairedItem: { item: i } });

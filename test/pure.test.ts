@@ -2,150 +2,24 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-	INVALID_REQUEST,
-	detachedTaskRef,
-	interventionNotice,
-	isProtocolDisabled,
+	apiBase,
+	apiErrorMessage,
+	apiErrorType,
+	apiPath,
+	gatewayOrigin,
 	matchesEvent,
 	parseJsonData,
 	parseJsonObject,
-	payloadError,
-	shapeAnswer,
+	rowsOf,
 	subscribeAck,
 	subscriptionEvent,
-	taskRecord,
-	toolPayload,
-	unwrapData,
+	taskLocation,
+	waitPreference,
 } from '../nodes/DataGrout/pure.ts';
 
 // DataGrout servers ship with only MCP enabled; the node detects the refusal
 // and turns JSON-RPC on itself, so this predicate gates the whole first-run
 // experience.
-describe('isProtocolDisabled', () => {
-	it('recognises the transport-disabled refusal', () => {
-		assert.equal(
-			isProtocolDisabled({ code: INVALID_REQUEST, message: 'JSON-RPC not enabled for this server' }),
-			true,
-		);
-	});
-
-	it('is case-insensitive on the message', () => {
-		assert.equal(
-			isProtocolDisabled({ code: INVALID_REQUEST, message: 'json-rpc NOT ENABLED for this server' }),
-			true,
-		);
-	});
-
-	it('does not fire on other invalid-request errors', () => {
-		assert.equal(isProtocolDisabled({ code: INVALID_REQUEST, message: 'Invalid params' }), false);
-	});
-
-	it('does not fire on a different code with a similar message', () => {
-		assert.equal(isProtocolDisabled({ code: -32000, message: 'JSON-RPC not enabled' }), false);
-	});
-
-	it('handles a missing error', () => {
-		assert.equal(isProtocolDisabled(undefined), false);
-	});
-});
-
-describe('detachedTaskRef', () => {
-	it('finds the reference when work detached', () => {
-		assert.equal(detachedTaskRef({ status: 'detached', task_ref: 'task_abc' }), 'task_abc');
-	});
-
-	it('looks inside structuredContent too', () => {
-		assert.equal(
-			detachedTaskRef({ structuredContent: { status: 'detached', task_ref: 'task_xyz' } }),
-			'task_xyz',
-		);
-	});
-
-	it('returns undefined for a completed call', () => {
-		assert.equal(detachedTaskRef({ status: 'ready' }), undefined);
-	});
-
-	it('ignores a non-string reference', () => {
-		assert.equal(detachedTaskRef({ status: 'detached', task_ref: 7 }), undefined);
-	});
-});
-
-// Two envelope shapes occur live: a direct tool call puts the record at the
-// top, the perform wrapper nests it under .result.
-describe('taskRecord', () => {
-	it('reads a top-level record', () => {
-		const p = { completed: true, status: 'completed', result: { answer: 1 } };
-		assert.deepEqual(taskRecord(p), p);
-	});
-
-	it('reads a nested record', () => {
-		const inner = { completed: false, status: 'working' };
-		assert.deepEqual(taskRecord({ result: inner }), inner);
-	});
-
-	it('treats a bare reference as the record', () => {
-		const p = { task_ref: 'task_abc' };
-		assert.deepEqual(taskRecord(p), p);
-	});
-
-	it('copes with nothing', () => {
-		assert.deepEqual(taskRecord(undefined), {});
-		assert.deepEqual(taskRecord({}), {});
-	});
-});
-
-describe('toolPayload', () => {
-	it('unwraps the doubly-wrapped result', () => {
-		const inner = { answer: 'yes', executed: true };
-		assert.deepEqual(toolPayload({ structuredContent: { result: inner } }), inner);
-	});
-
-	it('falls back to structuredContent when there is no inner result', () => {
-		const sc = { status: 'ready', plan: {} };
-		assert.deepEqual(toolPayload({ structuredContent: sc }), sc);
-	});
-
-	it('passes a bare result through', () => {
-		const bare = { rows: [1, 2] };
-		assert.deepEqual(toolPayload(bare), bare);
-	});
-});
-
-describe('shapeAnswer', () => {
-	it('surfaces the answer, verification and certificate', () => {
-		const shaped = shapeAnswer({
-			result: [{ account: 'Acme' }],
-			answer_confidence: 'verified',
-			ctc: { id: 'ctc_abc', url: 'https://ctc.datagrout.ai/certs/ctc_abc' },
-			skill_handle: 'vs_abc',
-		});
-		assert.deepEqual(shaped.answer, [{ account: 'Acme' }]);
-		assert.equal(shaped.verified, true);
-		assert.equal(shaped.certificateUrl, 'https://ctc.datagrout.ai/certs/ctc_abc');
-		assert.equal(shaped.certificateId, 'ctc_abc');
-		assert.equal(shaped.skill, 'vs_abc');
-	});
-
-	it('marks an unverified answer and carries the caveat', () => {
-		const shaped = shapeAnswer({
-			result: [],
-			answer_confidence: 'unverified',
-			hint: 'Could not confirm the Jira leg ran',
-		});
-		assert.equal(shaped.verified, false);
-		assert.equal(shaped.caveat, 'Could not confirm the Jira leg ran');
-	});
-
-	it('never loses the original payload', () => {
-		const payload = { result: 1, extra: 'kept' };
-		assert.deepEqual(shapeAnswer(payload).details, payload);
-	});
-
-	it('treats an absent confidence as verified', () => {
-		assert.equal(shapeAnswer({ result: 1 }).verified, true);
-	});
-});
-
 describe('parseJsonObject', () => {
 	it('parses a typed JSON string', () => {
 		assert.deepEqual(parseJsonObject('{"a":1}'), { a: 1 });
@@ -192,92 +66,6 @@ describe('parseJsonData', () => {
 // The exact envelope prism.refract returned over JSON-RPC, live-captured
 // 2026-08-27: the computed rows arrive as a JSON string inside a nested tool
 // response, which a workflow must never be handed raw.
-describe('unwrapData', () => {
-	const rows = [
-		{ region: 'south', total_amount: 25 },
-		{ region: 'north', total_amount: 15 },
-	];
-
-	it('parses rows out of a nested text content block', () => {
-		const payload = {
-			_dg: { tool: 'data-grout@1/prism.refract@1' },
-			data: {
-				content: [{ type: 'text', text: JSON.stringify(rows), annotations: {} }],
-				status_code: 200,
-			},
-			status_code: 200,
-		};
-		assert.deepEqual(unwrapData(payload), rows);
-	});
-
-	it('prefers a nested structuredContent value when present', () => {
-		const payload = { data: { structuredContent: { data: rows }, content: [] } };
-		assert.deepEqual(unwrapData(payload), rows);
-	});
-
-	it('accepts a nested result key too', () => {
-		const payload = { data: { structuredContent: { result: rows } } };
-		assert.deepEqual(unwrapData(payload), rows);
-	});
-
-	it('returns non-JSON text as text rather than throwing', () => {
-		const payload = { data: { content: [{ type: 'text', text: 'no rows found' }] } };
-		assert.equal(unwrapData(payload), 'no rows found');
-	});
-
-	it('leaves a payload without a nested response untouched', () => {
-		const payload = { count: 2, facts: [] };
-		assert.equal(unwrapData(payload), payload);
-	});
-
-	it('ignores a non-object data field', () => {
-		const payload = { data: 'plain' };
-		assert.equal(unwrapData(payload), payload);
-	});
-});
-
-// DataGrout reports tool failures inside a 200 response. Live-caught: an Ask
-// whose plan 400'd came back as a null answer marked verified — the exact
-// confidently-wrong outcome this integration exists to avoid.
-describe('payloadError', () => {
-	it('finds a top-level error string', () => {
-		assert.equal(payloadError({ error: 'No payload provided', status_code: 400 }), 'No payload provided');
-	});
-
-	it('finds an error nested under data', () => {
-		assert.equal(payloadError({ data: { error: 'Bad request', status_code: 400 } }), 'Bad request');
-	});
-
-	it('reads an error object message', () => {
-		assert.equal(payloadError({ error: { message: 'boom' } }), 'boom');
-	});
-
-	it('falls back to a bad status code alone', () => {
-		assert.equal(payloadError({ status_code: 503 }), 'DataGrout returned status 503');
-	});
-
-	it('is silent on success', () => {
-		assert.equal(payloadError({ status_code: 200, data: { status_code: 200 } }), undefined);
-		assert.equal(payloadError({ count: 2, facts: [] }), undefined);
-		assert.equal(payloadError(undefined), undefined);
-	});
-
-	it('ignores an empty error string', () => {
-		assert.equal(payloadError({ error: '   ' }), undefined);
-	});
-});
-
-describe('shapeAnswer never marks a failure verified', () => {
-	it('reports verified false when the payload carries an error', () => {
-		const shaped = shapeAnswer({ error: 'No payload provided', status_code: 400 });
-		assert.equal(shaped.verified, false);
-		assert.equal(shaped.answer, null);
-	});
-});
-
-// Frame shapes captured from the live WebSocket transport 2026-08-27. The
-// lifecycle case matters most: session.ready arrives on every connect, and
-// emitting it would start the workflow whenever the socket reconnected.
 describe('subscriptionEvent', () => {
 	it('emits a subscription event', () => {
 		const frame = {
@@ -378,77 +166,138 @@ describe('matchesEvent', () => {
 // interventions are not flagged as errors, so they would otherwise be handed to
 // a workflow as the answer. The read-tier one below is the exact payload a live
 // run produced on 2026-09-01.
-describe('interventionNotice', () => {
-	it('catches the read-tier loop that arrives as a success', () => {
-		const live = {
-			action: 'possible_loop',
-			consequence_tier: 'read',
-			execution_count: 4,
-			loop_detected: true,
-		};
-		const notice = interventionNotice(live);
-		assert.ok(notice);
-		assert.match(notice, /loop\s+guard stopped it/);
-		assert.match(notice, /4 times/);
+
+// ── The REST API client's helpers ────────────────────────────────────────
+
+describe('apiPath', () => {
+	it('joins segments under the API', () => {
+		assert.equal(apiPath('memories', 'warehouses', 'facts'), '/memories/warehouses/facts');
 	});
 
-	it('catches the write-confirmation gate', () => {
-		const notice = interventionNotice({
-			loop_detected: true,
-			consequence_tier: 'write',
-			execution_count: 2,
-			action: 'confirm_or_change_args',
-			original_receipt_id: 'rcpt_1',
-		});
-		assert.ok(notice);
-		assert.match(notice, /was not repeated/);
-		assert.match(notice, /2 times/);
-	});
-
-	it('catches a write-tier loop', () => {
-		const notice = interventionNotice({
-			loop_detected: true,
-			consequence_tier: 'write',
-			execution_count: 3,
-			action: 'use_previous_result',
-		});
-		assert.ok(notice);
-	});
-
-	it('copes with a missing count', () => {
-		const notice = interventionNotice({ loop_detected: true, action: 'possible_loop' });
-		assert.match(notice as string, /more than once/);
-	});
-
-	it('is silent on an ordinary payload', () => {
-		assert.equal(interventionNotice({ result: 42 }), undefined);
-		assert.equal(interventionNotice({ loop_detected: false }), undefined);
-		assert.equal(interventionNotice(undefined), undefined);
+	// A memory name or skill id is typed by a user; it must not be able to reach
+	// a different endpoint.
+	it('encodes each segment so a name cannot change the path', () => {
+		assert.equal(apiPath('memories', '../tasks/x', 'facts'), '/memories/..%2Ftasks%2Fx/facts');
+		assert.equal(apiPath('skills', 'a b?c', 'runs'), '/skills/a%20b%3Fc/runs');
 	});
 });
 
-describe('payloadError surfaces an intervention as a failure', () => {
-	it('fails rather than handing the intervention to the workflow', () => {
-		const live = {
-			action: 'possible_loop',
-			consequence_tier: 'read',
-			execution_count: 4,
-			loop_detected: true,
-		};
-		assert.match(payloadError(live) as string, /loop\s+guard stopped it/);
+describe('waitPreference', () => {
+	it('asks DataGrout to hold the request, in whole seconds', () => {
+		assert.equal(waitPreference(12_500), 'wait=13');
 	});
 
-	it('finds one nested under data', () => {
-		assert.ok(payloadError({ data: { loop_detected: true, action: 'possible_loop' } }));
+	it('never asks for longer than DataGrout will hold a request', () => {
+		assert.equal(waitPreference(120_000), 'wait=30');
 	});
 
-	it('never reports an intervention as a verified answer', () => {
-		const shaped = shapeAnswer({
-			loop_detected: true,
-			action: 'possible_loop',
-			execution_count: 5,
-			answer_confidence: 'high',
-		});
-		assert.equal(shaped.verified, false);
+	it('asks for nothing when the node should not wait', () => {
+		assert.equal(waitPreference(0), undefined);
+		assert.equal(waitPreference(-1), undefined);
+	});
+});
+
+describe('taskLocation', () => {
+	it('accepts a task path in either form', () => {
+		assert.equal(
+			taskLocation({ location: '/api/v1/servers/5c3e9f10/tasks/task_abc' }),
+			'/api/v1/servers/5c3e9f10/tasks/task_abc',
+		);
+		assert.equal(taskLocation({ location: '/api/v1/tasks/task_abc' }), '/api/v1/tasks/task_abc');
+	});
+
+	// It is joined to the gateway's base URL; anything else could carry the
+	// credential to another host or endpoint.
+	it('refuses anything that is not a task path on the API', () => {
+		assert.equal(taskLocation({ location: 'https://elsewhere.example.com/tasks/x' }), undefined);
+		assert.equal(taskLocation({ location: '//elsewhere.example.com/api/v1/tasks/x' }), undefined);
+		assert.equal(taskLocation({ location: '/api/v1/tasks/x/../../answers' }), undefined);
+		assert.equal(taskLocation({ location: '/oauth/token' }), undefined);
+		assert.equal(taskLocation({}), undefined);
+	});
+});
+
+describe('apiErrorMessage', () => {
+	it("reads the API's own error", () => {
+		const body = { error: { code: 409, type: 'loop_detected', message: 'This identical call ran 4 times.' } };
+		assert.equal(apiErrorMessage(body, 409), 'This identical call ran 4 times.');
+	});
+
+	it("reads the gateway's authentication error", () => {
+		assert.equal(apiErrorMessage({ error: { code: 401, message: 'Authentication required' } }, 401), 'Authentication required');
+	});
+
+	it("reads the rate limiter's flatter shape", () => {
+		const body = { error: 'rate_limited', message: 'Too many requests. Limit: 100 per 60s.' };
+		assert.equal(apiErrorMessage(body, 429), 'Too many requests. Limit: 100 per 60s.');
+	});
+
+	it('falls back to the status when there is nothing readable', () => {
+		assert.equal(apiErrorMessage(undefined, 502), 'DataGrout returned HTTP 502');
+		assert.equal(apiErrorMessage('<html>'.repeat(100), 502), 'DataGrout returned HTTP 502');
+	});
+
+	it('uses a short plain-text body from a proxy', () => {
+		assert.equal(apiErrorMessage('Bad Gateway', 502), 'Bad Gateway');
+	});
+});
+
+describe('apiErrorType', () => {
+	it('reads the stable type', () => {
+		assert.equal(apiErrorType({ error: { type: 'insufficient_credits' } }), 'insufficient_credits');
+		assert.equal(apiErrorType({ error: 'rate_limited' }), 'rate_limited');
+		assert.equal(apiErrorType({}), undefined);
+	});
+});
+
+describe('rowsOf', () => {
+	it('makes one item per record', () => {
+		assert.deepEqual(rowsOf([{ city: 'North', total: 7 }, { city: 'South', total: 5 }]), [
+			{ city: 'North', total: 7 },
+			{ city: 'South', total: 5 },
+		]);
+	});
+
+	it('wraps values that are not records', () => {
+		assert.deepEqual(rowsOf([1, 2]), [{ result: 1 }, { result: 2 }]);
+		assert.deepEqual(rowsOf(42), [{ result: 42 }]);
+	});
+
+	it('keeps a single record as one item', () => {
+		assert.deepEqual(rowsOf({ total: 42 }), [{ total: 42 }]);
+	});
+});
+
+describe('gatewayOrigin', () => {
+	it("reads the token credential's base URL", () => {
+		assert.equal(gatewayOrigin({ baseUrl: 'https://gateway.datagrout.ai/' }), 'https://gateway.datagrout.ai');
+	});
+
+	it("reads the OAuth2 credential's /connect URL", () => {
+		assert.equal(gatewayOrigin({ serverUrl: 'https://gateway.datagrout.ai/connect' }), 'https://gateway.datagrout.ai');
+	});
+
+	it('defaults to the hosted gateway', () => {
+		assert.equal(gatewayOrigin({}), 'https://gateway.datagrout.ai');
+		assert.equal(gatewayOrigin({ baseUrl: 'not a url' }), 'https://gateway.datagrout.ai');
+	});
+});
+
+describe('apiBase', () => {
+	it('names the server when the credential has one', () => {
+		assert.equal(
+			apiBase('https://gateway.datagrout.ai', '5c3e9f10-7b2a-4d8e-9a61-2f0c4b7d8e31'),
+			'https://gateway.datagrout.ai/api/v1/servers/5c3e9f10-7b2a-4d8e-9a61-2f0c4b7d8e31',
+		);
+	});
+
+	// An OAuth token already names its server; the gateway resolves it.
+	it('uses the server-less form when it does not', () => {
+		assert.equal(apiBase('https://gateway.datagrout.ai', undefined), 'https://gateway.datagrout.ai/api/v1');
+		assert.equal(apiBase('https://gateway.datagrout.ai', '  '), 'https://gateway.datagrout.ai/api/v1');
+	});
+
+	it('encodes the id', () => {
+		assert.equal(apiBase('https://g.example.com', 'a/b'), 'https://g.example.com/api/v1/servers/a%2Fb');
 	});
 });

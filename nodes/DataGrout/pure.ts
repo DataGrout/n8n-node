@@ -5,179 +5,109 @@ import type { IDataObject } from 'n8n-workflow';
 // unit-tested directly.
 // ────────────────────────────────────────────────────────────────────
 
-/** JSON-RPC error code DataGrout returns for a malformed or refused request. */
-export const INVALID_REQUEST = -32600;
+// ── REST API ─────────────────────────────────────────────────────────
+
+export const DEFAULT_GATEWAY = 'https://gateway.datagrout.ai';
 
 /**
- * DataGrout gates transports per server: `interaction_config.enabled_protocols`
- * defaults to `["mcp"]`, and the JSON-RPC endpoint refuses calls until
- * `jsonrpc` is added. The refusal is recognisable, which lets the node enable
- * the protocol itself rather than sending the user to a dashboard toggle.
+ * The gateway's origin from either credential: the token credential stores a
+ * base URL, the OAuth2 credential the `/connect` URL it authorises against.
  */
-export function isProtocolDisabled(error: IDataObject | undefined): boolean {
-	if (!error) return false;
-	const code = error.code;
-	const message = String(error.message ?? '').toLowerCase();
-	return code === INVALID_REQUEST && message.includes('json-rpc not enabled');
-}
-
-/**
- * A long-running DataGrout call detaches to a background task and answers with
- * `{status: "detached", task_ref}`. Returns that reference, else undefined.
- */
-export function detachedTaskRef(result: IDataObject): string | undefined {
-	const sc = (result.structuredContent as IDataObject) ?? result ?? {};
-	if (sc.status === 'detached' && typeof sc.task_ref === 'string') return sc.task_ref;
-	return undefined;
-}
-
-/**
- * The task record inside a `tasks.wait` reply. A direct tool call returns it at
- * the top of the payload; the perform wrapper nests it under `.result`. Both
- * shapes occur live, so support both.
- */
-export function taskRecord(payload: IDataObject | undefined): IDataObject {
-	const p = payload ?? {};
-	if (typeof p.completed !== 'undefined' || p.task_ref) return p;
-	return (p.result as IDataObject) ?? {};
-}
-
-/** Unwrap the tool payload from a JSON-RPC `tools.call` result. */
-export function toolPayload(result: IDataObject): IDataObject {
-	const sc = result.structuredContent;
-	if (sc && typeof sc === 'object' && !Array.isArray(sc)) {
-		const inner = (sc as IDataObject).result;
-		if (inner && typeof inner === 'object' && !Array.isArray(inner)) return inner as IDataObject;
-		return sc as IDataObject;
-	}
-	return result;
-}
-
-/**
- * Some tools answer with a whole nested tool response under `data` — the
- * computed rows sit in `data.structuredContent.data`, or as a JSON string in
- * `data.content[0].text` (live-verified against prism.refract over JSON-RPC).
- * Dig the useful value out so a workflow gets records, not an envelope.
- */
-export function unwrapData(payload: IDataObject): unknown {
-	const nested = payload.data;
-	if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return payload;
-	const inner = nested as IDataObject;
-
-	const structured = inner.structuredContent;
-	if (structured && typeof structured === 'object' && !Array.isArray(structured)) {
-		const value = (structured as IDataObject).data ?? (structured as IDataObject).result;
-		if (value !== undefined) return value;
-	}
-
-	const content = inner.content;
-	if (Array.isArray(content)) {
-		const block = content.find((c) => (c as IDataObject)?.type === 'text') as
-			| IDataObject
-			| undefined;
-		if (typeof block?.text === 'string') {
-			try {
-				return JSON.parse(block.text);
-			} catch {
-				return block.text;
-			}
+export function gatewayOrigin(credentials: IDataObject): string {
+	for (const candidate of [credentials.baseUrl, credentials.serverUrl]) {
+		if (typeof candidate !== 'string' || !candidate.trim()) continue;
+		try {
+			return new URL(candidate.trim()).origin;
+		} catch {
+			// not a URL; try the next
 		}
 	}
-
-	return payload;
+	return DEFAULT_GATEWAY;
 }
 
 /**
- * The failure message when a tool payload represents an error, else undefined.
- *
- * DataGrout reports tool-level failures inside a 200 response — an `error`
- * string with a `status_code`. Without this check the node would hand a
- * workflow a null answer marked verified (live-caught 2026-08-27), which is
- * the one outcome this integration must never produce.
+ * Where the API lives for a credential. An access token belongs to one server,
+ * which the path names. An OAuth token already names the server it was
+ * granted, so its requests use the server-less form and the gateway resolves
+ * the server from the token.
  */
-/**
- * The message for a DataGrout loop-guard intervention, else undefined.
- *
- * DataGrout guards against repeated identical calls: an identical read issued
- * several times with nothing changing in between, or a write repeated with the
- * same arguments, is answered with an explanation rather than run again.
- *
- * Two of those replies are not marked as errors, so without this check they
- * reach a workflow as though they were the answer — a downstream node expecting
- * rows receives `{loop_detected: true, …}` instead (live-caught 2026-09-01).
- * Nothing ran, so the honest outcome is a failure that says what happened.
- */
-export function interventionNotice(payload: IDataObject | undefined): string | undefined {
-	if (!payload || payload.loop_detected !== true) return undefined;
-
-	const count = payload.execution_count;
-	const times = typeof count === 'number' ? `${count} times` : 'more than once';
-
-	// These read as the tail of the node's own "DataGrout: " prefix, so they do
-	// not repeat the product name.
-	if (payload.action === 'confirm_or_change_args') {
-		return (
-			`this action was already called ${times} in this session with identical ` +
-			'arguments, so it was not repeated and the earlier result still stands. Change the ' +
-			'arguments if it genuinely needs to happen again.'
-		);
-	}
-
-	return (
-		`this identical call ran ${times} with nothing changing in between, so the loop ` +
-		'guard stopped it and no new result was produced. Vary the input, or raise the ' +
-		"loop-guard thresholds in this server's interaction settings."
-	);
+export function apiBase(origin: string, serverId: unknown): string {
+	const id = typeof serverId === 'string' ? serverId.trim() : '';
+	return id ? `${origin}/api/v1/servers/${encodeURIComponent(id)}` : `${origin}/api/v1`;
 }
 
-export function payloadError(payload: IDataObject | undefined): string | undefined {
-	if (!payload) return undefined;
+/** DataGrout holds a request for at most this long when asked to wait. */
+export const MAX_SERVER_WAIT_SECONDS = 30;
 
-	for (const candidate of [payload, payload.data as IDataObject]) {
-		if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+/**
+ * A path under the server's REST API, with each segment encoded — a memory name
+ * or skill id typed by a user must not be able to reach a different endpoint.
+ */
+export function apiPath(...segments: string[]): string {
+	return segments.map((segment) => `/${encodeURIComponent(segment)}`).join('');
+}
 
-		const intervention = interventionNotice(candidate);
-		if (intervention) return intervention;
+/**
+ * The `Prefer: wait=N` value (RFC 7240) asking DataGrout to hold a request until
+ * slow work finishes, or undefined when the caller does not want to wait.
+ */
+export function waitPreference(waitMs: number): string | undefined {
+	if (!(waitMs > 0)) return undefined;
+	return `wait=${Math.min(MAX_SERVER_WAIT_SECONDS, Math.ceil(waitMs / 1000))}`;
+}
 
-		const err = candidate.error;
-		if (typeof err === 'string' && err.trim()) return err;
-		if (err && typeof err === 'object') {
-			const message = (err as IDataObject).message;
-			return typeof message === 'string' ? message : JSON.stringify(err);
+/**
+ * Where to poll background work, from a `202 Accepted` body. Only a path on the
+ * API is accepted: it is joined to the gateway's own base URL, so a value that
+ * pointed anywhere else could carry the credential with it.
+ */
+export function taskLocation(body: unknown): string | undefined {
+	const location = (body as IDataObject | undefined)?.location;
+	if (typeof location !== 'string') return undefined;
+	return /^\/api\/v1\/(servers\/[^/]+\/)?tasks\/[^/]+$/.test(location) ? location : undefined;
+}
+
+/**
+ * The message to show for an error response. The API's own errors carry
+ * `{error: {message}}`; the gateway's rate limiter and authentication use a
+ * flatter shape, and a proxy in between may send plain text.
+ */
+export function apiErrorMessage(body: unknown, status: number): string {
+	if (body && typeof body === 'object') {
+		const b = body as IDataObject;
+		const error = b.error;
+		if (error && typeof error === 'object') {
+			const message = (error as IDataObject).message;
+			if (typeof message === 'string' && message) return message;
 		}
-
-		const status = candidate.status_code;
-		if (typeof status === 'number' && status >= 400) {
-			return `DataGrout returned status ${status}`;
-		}
+		if (typeof b.message === 'string' && b.message) return b.message;
+		if (typeof error === 'string' && error) return error;
 	}
+	if (typeof body === 'string' && body.trim() && body.length <= 300) return body.trim();
+	return `DataGrout returned HTTP ${status}`;
+}
 
-	return undefined;
+/** The stable error type, for continueOnFail output a workflow can branch on. */
+export function apiErrorType(body: unknown): string | undefined {
+	const error = (body as IDataObject | undefined)?.error;
+	if (error && typeof error === 'object') {
+		const type = (error as IDataObject).type;
+		if (typeof type === 'string') return type;
+	}
+	return typeof error === 'string' ? error : undefined;
 }
 
 /**
- * Shape an Ask result for a workflow: the answer, whether DataGrout could
- * verify it, and the certificate that shows exactly what ran. Everything the
- * planner returned is preserved under `details` so nothing is lost.
+ * A transform's result as workflow items: one per row when it is a list of
+ * records, otherwise a single item.
  */
-export function shapeAnswer(payload: IDataObject): IDataObject {
-	const ctc = (payload.ctc as IDataObject) ?? {};
-	const confidence = payload.answer_confidence;
+export function rowsOf(result: unknown): IDataObject[] {
+	const asItem = (value: unknown): IDataObject =>
+		value && typeof value === 'object' && !Array.isArray(value)
+			? (value as IDataObject)
+			: ({ result: value } as IDataObject);
 
-	const failed = payloadError(payload) !== undefined;
-
-	const out: IDataObject = {
-		answer: payload.result ?? payload.answer ?? null,
-		verified: !failed && confidence !== 'unverified',
-		details: payload,
-	};
-
-	if (typeof payload.hint === 'string' && confidence === 'unverified') out.caveat = payload.hint;
-	if (typeof ctc.url === 'string') out.certificateUrl = ctc.url;
-	if (typeof ctc.id === 'string') out.certificateId = ctc.id;
-	if (typeof payload.skill_handle === 'string') out.skill = payload.skill_handle;
-
-	return out;
+	return Array.isArray(result) ? result.map(asItem) : [asItem(result)];
 }
 
 /**
@@ -265,7 +195,7 @@ export function matchesEvent(event: string, wanted: string[] | undefined): boole
 export function exampleEvent(event = 'run.completed'): IDataObject {
 	const examples: Record<string, IDataObject> = {
 		'run.completed': {
-			run_id: 79566,
+			run_id: 4127,
 			execution_id: 'exec_1a2b3c',
 			status: 'success',
 			tool_name: 'discovery.plan',
@@ -285,7 +215,7 @@ export function exampleEvent(event = 'run.completed'): IDataObject {
 			status: 'failed',
 		},
 		'tool_call.failed': {
-			run_id: 79566,
+			run_id: 4127,
 			execution_id: 'exec_1a2b3c',
 			tool_name: 'logic.query',
 			error: 'namespace not found',
@@ -504,4 +434,74 @@ export function startEventSession(options: SessionOptions): Session {
 			}
 		},
 	};
+}
+
+// ── Trigger activation ──────────────────────────────────────────────
+
+export interface ActivationOptions {
+	credentials: IDataObject;
+	/** An authenticated request through n8n, which refreshes an expired OAuth2 token. */
+	request: (method: 'GET' | 'POST', url: string, body?: IDataObject) => Promise<IDataObject>;
+	/** The credentials as stored now, after any refresh `request` caused. */
+	readCredentials: () => Promise<IDataObject>;
+	log: Pick<SessionLogger, 'info' | 'warn'>;
+}
+
+export interface EventSocketTarget {
+	url: string;
+	token: string;
+}
+
+function bearerOf(credentials: IDataObject): string | undefined {
+	const oauth = credentials.oauthTokenData as IDataObject | undefined;
+	const token = oauth?.access_token ?? credentials.apiToken;
+	return typeof token === 'string' && token ? token : undefined;
+}
+
+/**
+ * Everything the trigger does before it dials: find the server, make sure it
+ * accepts WebSockets, and pick up the token to present.
+ */
+export async function prepareEventSocket(options: ActivationOptions): Promise<EventSocketTarget> {
+	const { credentials, request, log } = options;
+	const origin = gatewayOrigin(credentials);
+
+	// An OAuth2 credential has no Server ID: the server is the one the user
+	// picked at consent, and the token names it.
+	let serverId = String(credentials.serverId ?? '').trim();
+	if (!serverId) {
+		const found = await request('GET', `${origin}/api/v1/server`).then(
+			(server) => ({ id: String(server.id ?? '') }),
+			(error: Error) => ({ error }),
+		);
+		if ('error' in found) {
+			throw new Error(
+				`Could not find which DataGrout server this credential belongs to: ${found.error.message}`,
+			);
+		}
+		serverId = found.id;
+		if (!serverId) throw new Error('DataGrout did not say which server this credential belongs to');
+	}
+	const server = `${origin}/servers/${encodeURIComponent(serverId)}`;
+
+	// DataGrout gates transports per server. Switching WebSocket on here keeps
+	// setup out of the dashboard; it changes the user's own server, so it is
+	// logged, and it happens only when they activate the trigger.
+	try {
+		const result = await request('POST', `${server}/interaction/enable_protocol`, { protocol: 'ws' });
+		const enabled = result?.enabled_protocols;
+		log.info(
+			`[DataGrout Trigger] WebSocket transport enabled on server ${serverId}` +
+				(Array.isArray(enabled) ? ` (now: ${enabled.join(', ')})` : ''),
+		);
+	} catch (error) {
+		log.warn(
+			`[DataGrout Trigger] could not enable the WebSocket transport: ${(error as Error).message}`,
+		);
+	}
+
+	const token = bearerOf(await options.readCredentials());
+	if (!token) throw new Error('The DataGrout credential has no token');
+
+	return { url: `${server.replace(/^http/, 'ws')}/ws`, token };
 }

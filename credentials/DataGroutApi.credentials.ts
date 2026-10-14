@@ -49,22 +49,15 @@ export class DataGroutApi implements ICredentialType {
 		},
 	};
 
-	// A credential test answers "are these credentials valid?", so it reads and
-	// changes nothing. `tools.list` settles both halves of the credential: a bad
-	// token is rejected by the gateway's auth plug (401/403), and an unknown
-	// Server ID is a 404.
-	//
-	// A server that has not yet switched on the JSON-RPC transport answers HTTP
-	// 200 with a JSON-RPC error in the body, which n8n reads as a pass — rightly,
-	// because that is a server setting rather than a bad credential. The node
-	// switches the transport on when a workflow actually runs, not when someone
-	// clicks Test.
+	// A credential test answers "are these credentials valid?", so it reads,
+	// changes nothing and costs nothing. The server endpoint settles both halves
+	// of the credential: a bad token is rejected by the gateway's auth plug
+	// (401/403), and an unknown Server ID is a 404.
 	test: ICredentialTestRequest = {
 		request: {
 			baseURL: '={{$credentials.baseUrl}}',
-			url: '=/servers/{{$credentials.serverId}}/rpc',
-			method: 'POST',
-			body: { jsonrpc: '2.0', id: 1, method: 'tools.list', params: {} },
+			url: '=/api/v1/servers/{{$credentials.serverId}}',
+			method: 'GET',
 		},
 	};
 }
