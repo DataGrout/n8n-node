@@ -1,4 +1,4 @@
-## [0.4.0] — unreleased
+## [0.4.0] - 2026-10-14
 
 **Breaking.** The node is now organised around DataGrout operations instead of
 raw tool calls, and calls DataGrout's REST API rather than MCP. Existing

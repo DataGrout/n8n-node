@@ -1,3 +1,9 @@
+/*
+ * Unit tests. These never ship: `files: ["dist"]` publishes only build output,
+ * and tsconfig compiles `nodes/` and `credentials/` only. The n8n Cloud rules
+ * below govern the node's shipped runtime, so they do not apply to this file.
+ */
+/* eslint-disable @n8n/community-nodes/no-restricted-imports, @n8n/community-nodes/no-restricted-globals */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
