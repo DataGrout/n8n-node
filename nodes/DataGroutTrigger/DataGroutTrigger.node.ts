@@ -1,33 +1,34 @@
 import type {
 	IDataObject,
+	IHookFunctions,
 	INodeType,
 	INodeTypeDescription,
-	ITriggerFunctions,
-	ITriggerResponse,
+	IWebhookFunctions,
+	IWebhookResponseData,
+	JsonObject,
 } from 'n8n-workflow';
-import { NodeConnectionTypes, NodeOperationError, sleep } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
-import {
-	EVENTS_TOPIC,
-	SUBPROTOCOL,
-	exampleEvent,
-	prepareEventSocket,
-	startEventSession,
-} from '../DataGrout/pure';
+import { apiPath, matchesEvent, secretMatches, webhookEvent } from '../DataGrout/pure';
+import { apiError, hookRequest } from '../DataGrout/transport';
 
 // ────────────────────────────────────────────────────────────────────
 // Starts a workflow when DataGrout pushes an event.
 //
-// DataGrout multiplexes JSON-RPC 2.0 over a single WebSocket, so one
-// connection carries every subscription and the server pushes without
-// the workflow polling for anything. Node's built-in WebSocket is used,
-// keeping the package free of runtime dependencies.
-//
-// The socket lifecycle itself lives in ../DataGrout/wsSession, which
-// takes its dependencies as arguments so the tests can drive it without
-// a network or the n8n runtime. What remains here is the adapter:
-// read parameters, supply a real socket, hand n8n its two callbacks.
+// Activating the workflow registers a webhook subscription on the user's
+// DataGrout server, pointing at the URL n8n gives this node; DataGrout
+// POSTs each event there, and deactivating removes the subscription.
+// DataGrout returns a secret once, at registration, and presents it on
+// every delivery, so a request without it never starts the workflow.
 // ────────────────────────────────────────────────────────────────────
+
+const SECRET_HEADER = 'x-datagrout-webhook-secret';
+
+/** Drop the subscription this node remembers holding. */
+function forget(registration: IDataObject): void {
+	delete registration.webhookId;
+	delete registration.webhookSecret;
+}
 
 // A trigger starts workflows and is never called by an agent. The property's
 // type only accepts `true`, so it is omitted rather than set to false.
@@ -45,7 +46,7 @@ export class DataGroutTrigger implements INodeType {
 		defaults: { name: 'DataGrout Trigger' },
 		codex: {
 			categories: ['AI', 'Data & Storage'],
-			alias: ['DataGrout', 'trigger', 'events'],
+			alias: ['DataGrout', 'trigger', 'events', 'webhook'],
 			resources: { primaryDocumentation: [{ url: 'https://library.datagrout.ai/' }] },
 		},
 		inputs: [],
@@ -60,6 +61,14 @@ export class DataGroutTrigger implements INodeType {
 				name: 'dataGroutOAuth2Api',
 				required: true,
 				displayOptions: { show: { authentication: ['oAuth2'] } },
+			},
+		],
+		webhooks: [
+			{
+				name: 'default',
+				httpMethod: 'POST',
+				responseMode: 'onReceived',
+				path: 'webhook',
 			},
 		],
 		properties: [
@@ -121,90 +130,113 @@ export class DataGroutTrigger implements INodeType {
 						default: true,
 						description: 'Whether to add the event name to each item as "event"',
 					},
-					{
-						displayName: 'Reconnect Automatically',
-						name: 'reconnect',
-						type: 'boolean',
-						default: true,
-						description:
-							'Whether to reopen the connection if it drops, with a backing-off delay',
-					},
-					{
-						displayName: 'Topic',
-						name: 'topic',
-						type: 'string',
-						default: EVENTS_TOPIC,
-						description:
-							'The stream to listen on. The default carries every lifecycle event for this server. Change it only to follow a single orchestration run, which publishes to a topic of its own.',
-					},
 				],
 			},
 		],
 	};
 
-	async trigger(this: ITriggerFunctions): Promise<ITriggerResponse> {
-		// Node's global WebSocket is what keeps this dependency-free; it is
-		// available from Node 22. Fail with something actionable rather than a
-		// ReferenceError deep in a listener.
-		if (typeof WebSocket === 'undefined') {
-			throw new NodeOperationError(
-				this.getNode(),
-				'This trigger needs a WebSocket, which requires n8n running on Node 22 or newer',
-			);
+	webhookMethods = {
+		default: {
+			async checkExists(this: IHookFunctions): Promise<boolean> {
+				const registration = this.getWorkflowStaticData('node');
+				const id = registration.webhookId;
+				if (typeof id !== 'string' || !id) return false;
+
+				const { status, body } = await hookRequest(this, 'GET', apiPath('webhooks', id));
+				if (status === 404) {
+					forget(registration);
+					return false;
+				}
+				if (status >= 400) throw apiError(this, status, body);
+
+				if ((body as IDataObject).url === this.getNodeWebhookUrl('default')) return true;
+
+				// Registered for another URL. In the editor that is the production
+				// subscription of an active workflow, which must stay; otherwise n8n's
+				// own URL changed, and the old subscription would only collect failures.
+				if (this.getMode() !== 'manual') {
+					await hookRequest(this, 'DELETE', apiPath('webhooks', id)).catch(() => undefined);
+					forget(registration);
+				}
+				return false;
+			},
+
+			async create(this: IHookFunctions): Promise<boolean> {
+				const url = this.getNodeWebhookUrl('default');
+				if (!url) {
+					throw new NodeOperationError(
+						this.getNode(),
+						'n8n gave this node no webhook URL to register',
+					);
+				}
+				const events = this.getNodeParameter('events', []) as string[];
+
+				const { status, body } = await hookRequest(this, 'POST', apiPath('webhooks'), {
+					url,
+					events,
+					source: 'n8n',
+				});
+				if (status >= 400) throw apiError(this, status, body);
+
+				const created = (body ?? {}) as IDataObject;
+				if (
+					typeof created.id !== 'string' ||
+					!created.id ||
+					typeof created.secret !== 'string' ||
+					!created.secret
+				) {
+					throw new NodeApiError(this.getNode(), created as JsonObject, {
+						message: 'DataGrout: the webhook was registered but no id and secret came back',
+					});
+				}
+
+				const registration = this.getWorkflowStaticData('node');
+				registration.webhookId = created.id;
+				registration.webhookSecret = created.secret;
+				return true;
+			},
+
+			async delete(this: IHookFunctions): Promise<boolean> {
+				const registration = this.getWorkflowStaticData('node');
+				const id = registration.webhookId;
+				if (typeof id === 'string' && id) {
+					try {
+						const { status, body } = await hookRequest(this, 'DELETE', apiPath('webhooks', id));
+						if (status >= 400 && status !== 404) throw apiError(this, status, body);
+					} catch (error) {
+						// Kept, so the next deactivation can try again.
+						this.logger.warn(
+							`[DataGrout Trigger] could not remove webhook ${id}: ${(error as Error).message}`,
+						);
+						return false;
+					}
+				}
+				forget(registration);
+				return true;
+			},
+		},
+	};
+
+	async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
+		const stored = this.getWorkflowStaticData('node').webhookSecret;
+		if (!secretMatches(this.getHeaderData()[SECRET_HEADER], stored)) {
+			this.getResponseObject().status(401).end();
+			return { noWebhookResponse: true };
 		}
 
-		const authentication = this.getNodeParameter('authentication', 'apiToken') as string;
-		const credentialName = authentication === 'oAuth2' ? 'dataGroutOAuth2Api' : 'dataGroutApi';
+		const received = webhookEvent(this.getBodyData());
+		if (!received) {
+			this.logger.warn('[DataGrout Trigger] ignored a delivery that carried no event');
+			return {};
+		}
 
 		const wanted = this.getNodeParameter('events', []) as string[];
+		if (!matchesEvent(received.event, wanted)) return {};
+
 		const options = this.getNodeParameter('options', {}) as IDataObject;
 		const includeEventName = (options.includeEventName as boolean) ?? true;
-		const reconnect = (options.reconnect as boolean) ?? true;
-		const topic = String(options.topic ?? EVENTS_TOPIC).trim() || EVENTS_TOPIC;
+		const item = includeEventName ? { event: received.event, ...received.data } : received.data;
 
-		const target = await prepareEventSocket({
-			credentials: await this.getCredentials(credentialName),
-			request: async (method, url, body) =>
-				(await this.helpers.httpRequestWithAuthentication.call(this, credentialName, {
-					method,
-					url,
-					body,
-					json: true,
-				})) as IDataObject,
-			readCredentials: async () => await this.getCredentials(credentialName),
-			log: this.logger,
-		}).catch((error: Error) => {
-			throw new NodeOperationError(this.getNode(), error);
-		});
-
-		const session = startEventSession({
-			topic,
-			events: wanted,
-			includeEventName,
-			reconnect,
-			sleep,
-			log: this.logger,
-			emit: (json) => this.emit([this.helpers.returnJsonArray([json])]),
-			// `headers` is an undici extension to the WHATWG constructor; it is how
-			// the bearer token reaches the upgrade request, which the standard API
-			// gives no way to do.
-			connect: () =>
-				new WebSocket(target.url, {
-					headers: { Authorization: `Bearer ${target.token}` },
-					protocols: [SUBPROTOCOL],
-				} as unknown as string[]),
-			openState: WebSocket.OPEN,
-		});
-
-		const closeFunction = async () => session.close();
-
-		// "Test step" in the editor: emit an example carrying the real fields of
-		// whichever event was selected, so downstream nodes can be wired against
-		// the actual shape without waiting for one to happen.
-		const manualTriggerFunction = async () => {
-			this.emit([this.helpers.returnJsonArray([exampleEvent(wanted[0])])]);
-		};
-
-		return { closeFunction, manualTriggerFunction };
+		return { workflowData: [this.helpers.returnJsonArray([item])] };
 	}
 }

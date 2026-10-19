@@ -1,6 +1,7 @@
 import type {
 	IDataObject,
 	IExecuteFunctions,
+	IHookFunctions,
 	IHttpRequestMethods,
 	IHttpRequestOptions,
 	JsonObject,
@@ -29,26 +30,52 @@ export const DEFAULT_WAIT_MS = 120_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 2_000;
 
+/** Whichever n8n context is calling: the node's execute, or the trigger's webhook hooks. */
+type Caller = IExecuteFunctions | IHookFunctions;
+
+interface Response {
+	status: number;
+	body: unknown;
+}
+
 interface Connection {
 	credential: string;
 	origin: string;
 	base: string;
 }
 
+function credentialFor(authentication: unknown): string {
+	return authentication === 'oAuth2' ? 'dataGroutOAuth2Api' : 'dataGroutApi';
+}
+
 async function connection(ctx: IExecuteFunctions, itemIndex: number): Promise<Connection> {
-	const kind = ctx.getNodeParameter('authentication', itemIndex, 'apiToken') as string;
-	const credential = kind === 'oAuth2' ? 'dataGroutOAuth2Api' : 'dataGroutApi';
+	const credential = credentialFor(ctx.getNodeParameter('authentication', itemIndex, 'apiToken'));
 	const credentials = await ctx.getCredentials(credential, itemIndex);
 	const origin = gatewayOrigin(credentials);
 	return { credential, origin, base: apiBase(origin, credentials.serverId) };
 }
 
-async function send(
-	ctx: IExecuteFunctions,
+/** The error to raise for a response the API refused, in the API's own words. */
+export function apiError(
+	ctx: Caller,
+	status: number,
+	body: unknown,
+	itemIndex?: number,
+): NodeApiError {
+	const type = apiErrorType(body);
+	return new NodeApiError(ctx.getNode(), (body ?? {}) as JsonObject, {
+		message: `DataGrout: ${apiErrorMessage(body, status)}`,
+		description: type ? `Error type: ${type}` : undefined,
+		httpCode: String(status),
+		itemIndex,
+	});
+}
+
+async function request(
+	ctx: Caller,
 	credential: string,
 	options: IHttpRequestOptions,
-	itemIndex: number,
-): Promise<{ status: number; body: unknown }> {
+): Promise<Response> {
 	const response = (await ctx.helpers.httpRequestWithAuthentication.call(ctx, credential, {
 		...options,
 		json: true,
@@ -57,17 +84,34 @@ async function send(
 		ignoreHttpStatusErrors: true,
 	})) as { statusCode: number; body: unknown };
 
-	if (response.statusCode >= 400) {
-		const type = apiErrorType(response.body);
-		throw new NodeApiError(ctx.getNode(), (response.body ?? {}) as JsonObject, {
-			message: `DataGrout: ${apiErrorMessage(response.body, response.statusCode)}`,
-			description: type ? `Error type: ${type}` : undefined,
-			httpCode: String(response.statusCode),
-			itemIndex,
-		});
-	}
-
 	return { status: response.statusCode, body: response.body };
+}
+
+async function send(
+	ctx: IExecuteFunctions,
+	credential: string,
+	options: IHttpRequestOptions,
+	itemIndex: number,
+): Promise<Response> {
+	const response = await request(ctx, credential, options);
+	if (response.status >= 400) throw apiError(ctx, response.status, response.body, itemIndex);
+	return response;
+}
+
+/**
+ * One call from the trigger's webhook hooks, returned as status and body
+ * rather than thrown: the hooks decide what a 404 means.
+ */
+export async function hookRequest(
+	ctx: IHookFunctions,
+	method: IHttpRequestMethods,
+	path: string,
+	body?: IDataObject,
+): Promise<Response> {
+	const credential = credentialFor(ctx.getNodeParameter('authentication', 'apiToken'));
+	const credentials = await ctx.getCredentials(credential);
+	const base = apiBase(gatewayOrigin(credentials), credentials.serverId);
+	return await request(ctx, credential, { method, url: base + path, body });
 }
 
 /**

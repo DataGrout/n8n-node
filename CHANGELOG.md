@@ -1,3 +1,21 @@
+## [0.5.0] - Unreleased
+
+### Changed
+- **DataGrout Trigger** receives events over a webhook instead of a WebSocket.
+  Activating the workflow registers a webhook subscription on your DataGrout
+  server for the selected events, pointed at the URL n8n gives the node;
+  DataGrout POSTs each event there, and deactivating the workflow removes the
+  subscription. Every delivery must carry the secret issued at registration, or
+  it is answered 401 and the workflow does not start. The events and the fields
+  they carry are unchanged. Needs a DataGrout server whose REST API has
+  `/webhooks`.
+
+### Removed
+- The trigger's **Reconnect Automatically** and **Topic** options, its Node 22
+  requirement, and its switching-on of the server's WebSocket transport.
+- **Test step** on the trigger no longer emits a synthetic example event. Use
+  **Listen for test event** and cause a real one.
+
 ## [0.4.0] - 2026-10-14
 
 **Breaking.** The node is now organised around DataGrout operations instead of

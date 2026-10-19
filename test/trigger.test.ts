@@ -7,118 +7,80 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { prepareEventSocket } from '../nodes/DataGrout/pure.ts';
-import type { ActivationOptions } from '../nodes/DataGrout/pure.ts';
+import { secretMatches, webhookEvent } from '../nodes/DataGrout/pure.ts';
 
 // ────────────────────────────────────────────────────────────────────
-// What the trigger does before it dials: which server it resolves, what
-// it changes on that server, and which token reaches the socket.
+// What the trigger does with a delivery from DataGrout: which requests
+// it lets in, and what a workflow sees of each event.
 // ────────────────────────────────────────────────────────────────────
 
-const SERVER = '5c3e9f10-7b2a-4d8e-9a61-2f0c4b7d8e31';
-
-interface Request {
-	method: string;
-	url: string;
-	body?: unknown;
-}
-
-function activation(opts: {
-	credentials: Array<Record<string, unknown>>;
-	respond?: (request: Request) => unknown;
-}) {
-	const requests: Request[] = [];
-	const logged: string[] = [];
-	let reads = 0;
-	const read = async () => opts.credentials[Math.min(reads++, opts.credentials.length - 1)];
-
-	const options = async (): Promise<ActivationOptions> => ({
-		credentials: await read(),
-		request: async (method, url, body) => {
-			const request = { method, url, body };
-			requests.push(request);
-			return (opts.respond?.(request) ?? {}) as Record<string, unknown>;
-		},
-		readCredentials: read,
-		log: { info: (m) => logged.push(m), warn: (m) => logged.push(m) },
-	});
-
-	return { run: async () => prepareEventSocket(await options()), requests, logged };
-}
-
-describe('prepareEventSocket', () => {
-	it('switches on only the WebSocket transport', async () => {
-		const { run, requests } = activation({ credentials: [{ apiToken: 'tok_example', serverId: SERVER }] });
-
-		await run();
-
-		assert.deepEqual(requests, [
-			{
-				method: 'POST',
-				url: `https://gateway.datagrout.ai/servers/${SERVER}/interaction/enable_protocol`,
-				body: { protocol: 'ws' },
+// The envelope DataGrout's dispatcher POSTs, with `data` carrying exactly the
+// fields the WebSocket stream used to.
+describe('webhookEvent', () => {
+	it('reads the event name and its fields out of the envelope', () => {
+		const body = {
+			event: 'run.completed',
+			server_id: '5c3e9f10-7b2a-4d8e-9a61-2f0c4b7d8e31',
+			timestamp: '2026-10-16T09:30:00Z',
+			data: {
+				run_id: 4127,
+				execution_id: 'exec_1a2b3c',
+				status: 'success',
+				tool_name: 'discovery.plan',
+				source: 'mcp',
+				duration_ms: 4210,
 			},
-		]);
-	});
+		};
 
-	it('dials the credential’s own server and base URL with its token', async () => {
-		const { run, requests } = activation({
-			credentials: [{ apiToken: 'tok_example', serverId: SERVER, baseUrl: 'https://gw.example.com/' }],
-		});
-
-		const target = await run();
-
-		assert.equal(requests.some((r) => r.method === 'GET'), false);
-		assert.deepEqual(target, { url: `wss://gw.example.com/servers/${SERVER}/ws`, token: 'tok_example' });
-	});
-
-	it('asks the gateway which server an OAuth2 credential belongs to', async () => {
-		const { run, requests } = activation({
-			credentials: [
-				{ serverUrl: 'https://gateway.datagrout.ai/connect', oauthTokenData: { access_token: 'stale' } },
-				{ serverUrl: 'https://gateway.datagrout.ai/connect', oauthTokenData: { access_token: 'fresh' } },
-			],
-			respond: (r) => (r.method === 'GET' ? { id: SERVER, name: 'Example' } : {}),
-		});
-
-		const target = await run();
-
-		assert.deepEqual(requests[0], { method: 'GET', url: 'https://gateway.datagrout.ai/api/v1/server', body: undefined });
-		assert.equal(target.url, `wss://gateway.datagrout.ai/servers/${SERVER}/ws`);
-		// The lookup may have refreshed the token; the socket gets the current one.
-		assert.equal(target.token, 'fresh');
-	});
-
-	it('fails with a reason when the server cannot be found', async () => {
-		const { run } = activation({
-			credentials: [{ oauthTokenData: { access_token: 'tok' } }],
-			respond: (r) => {
-				if (r.method === 'GET') throw new Error('401 Unauthorized');
-				return {};
+		assert.deepEqual(webhookEvent(body), {
+			event: 'run.completed',
+			data: {
+				run_id: 4127,
+				execution_id: 'exec_1a2b3c',
+				status: 'success',
+				tool_name: 'discovery.plan',
+				source: 'mcp',
+				duration_ms: 4210,
 			},
 		});
-
-		await assert.rejects(run(), /Could not find which DataGrout server.*401 Unauthorized/);
 	});
 
-	it('goes on to dial when the transport could not be switched on, and says so', async () => {
-		const { run, logged } = activation({
-			credentials: [{ apiToken: 'tok_example', serverId: SERVER }],
-			respond: (r) => {
-				if (r.method === 'POST') throw new Error('403 Forbidden');
-				return {};
-			},
+	it('gives an event that carries nothing an empty record', () => {
+		assert.deepEqual(webhookEvent({ event: 'task.failed' }), { event: 'task.failed', data: {} });
+		assert.deepEqual(webhookEvent({ event: 'task.failed', data: [1, 2] }), {
+			event: 'task.failed',
+			data: {},
 		});
-
-		const target = await run();
-
-		assert.equal(target.token, 'tok_example');
-		assert.ok(logged.some((m) => m.includes('could not enable the WebSocket transport: 403 Forbidden')));
 	});
 
-	it('refuses a credential with no token', async () => {
-		const { run } = activation({ credentials: [{ serverId: SERVER }] });
+	it('ignores a body that is not an event envelope', () => {
+		assert.equal(webhookEvent({}), undefined);
+		assert.equal(webhookEvent({ event: '', data: {} }), undefined);
+		assert.equal(webhookEvent({ event: 42, data: {} }), undefined);
+		assert.equal(webhookEvent('run.completed'), undefined);
+		assert.equal(webhookEvent(undefined), undefined);
+	});
+});
 
-		await assert.rejects(run(), /has no token/);
+// The secret DataGrout returned once, at registration, and presents on every
+// delivery; anything else is answered 401 and never starts the workflow.
+describe('secretMatches', () => {
+	it('accepts the secret given at registration', () => {
+		assert.equal(secretMatches('whsec_1a2b3c', 'whsec_1a2b3c'), true);
+	});
+
+	it('rejects a different, empty or missing header', () => {
+		assert.equal(secretMatches('whsec_other', 'whsec_1a2b3c'), false);
+		assert.equal(secretMatches('', 'whsec_1a2b3c'), false);
+		assert.equal(secretMatches(undefined, 'whsec_1a2b3c'), false);
+	});
+
+	it('rejects a header sent more than once', () => {
+		assert.equal(secretMatches(['whsec_1a2b3c', 'whsec_1a2b3c'], 'whsec_1a2b3c'), false);
+	});
+
+	it('lets nothing through while no secret is stored', () => {
+		assert.equal(secretMatches('', ''), false);
+		assert.equal(secretMatches('whsec_1a2b3c', undefined), false);
 	});
 });
