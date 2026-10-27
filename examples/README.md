@@ -24,14 +24,15 @@ so the next node transforms that result server-side without re-fetching or
 re-computing anything. This is why `cache_ref` is on the wire.
 
 **Import**, then attach a DataGrout credential to both nodes and activate the
-workflow. Use **Test step** on the trigger to emit a shaped example if you want
-to wire the downstream node before a real task finishes.
+workflow, which registers the webhook with DataGrout. To wire the downstream
+node first, press **Listen for test event** on the trigger and let a real task
+finish.
 
 ## `datagrout-trigger-failures.json` — route failures
 
-DataGrout publishes every server event to one topic, so a workflow subscribes
-once and branches on `event`. This one listens for `task.failed` and
-`tool_call.failed` and splits them.
+One trigger can register for several events, and each item says which one
+arrived in `event`, so a workflow branches on it. This one listens for
+`task.failed` and `tool_call.failed` and splits them.
 
 `task.failed` is the one nothing else reports: whoever started the task stopped
 waiting long before it failed. Replace the two No-Op nodes with whatever you

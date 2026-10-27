@@ -29,8 +29,8 @@ No runtime dependencies.
   in the next, and in other workflows pointed at the same memory.
 - **Compute that stays next to the data.** A large result never has to travel
   through your workflow to be grouped or aggregated.
-- **Events pushed to you.** One WebSocket, no polling, no webhook URL to paste
-  into a dashboard.
+- **Events pushed to you.** The trigger registers its own webhook with DataGrout
+  when you activate the workflow: no polling, nothing to paste into a dashboard.
 
 ## Operations
 
@@ -66,8 +66,10 @@ and from what follows logically from them, with no model call.
 
 ## DataGrout Trigger
 
-DataGrout publishes every server event to one topic, so the trigger subscribes
-once and you pick the events you want:
+Activating the workflow registers a webhook with your DataGrout server, pointed
+at the URL n8n gives the trigger. DataGrout then POSTs each event straight to
+n8n, and deactivating the workflow removes the registration. You pick the
+events you want:
 
 | Event | Carries |
 | --- | --- |
@@ -90,13 +92,17 @@ that result server-side without re-fetching or recomputing it.
 `run_id` is the integer DataGrout's own `runs.get` accepts, so a following node
 can fetch the full run without translating anything.
 
-Connection lifecycle frames are filtered out, so a reconnect does not start your
-workflow. The connection is held open with a keepalive, and a genuinely dropped
-one reopens on a backing-off delay.
+Each registration comes with a secret that DataGrout presents on every delivery.
+A request without it is answered 401 and never starts your workflow, and an
+event you did not select is acknowledged and dropped.
 
-Press **Test step** in the editor to emit an example carrying the real fields of
-whichever event you selected, so you can wire downstream nodes before a real
-event happens.
+DataGrout must be able to reach n8n over HTTPS at a public address. It refuses
+plain HTTP and any `localhost` or private-network URL, so a self-hosted instance
+needs a public `WEBHOOK_URL`.
+
+Press **Listen for test event** in the editor, then make something happen in
+DataGrout — a run finishing, a task failing — and the event lands in the editor
+so you can wire downstream nodes against its real fields.
 
 ## Examples
 
@@ -135,10 +141,6 @@ token itself names the server it was granted.
 Testing a credential only reads — it fetches the server's name, changes nothing
 and costs nothing.
 
-The trigger listens over DataGrout's WebSocket transport, which a new server has
-switched off. It switches it on when the trigger starts, and writes that to the
-n8n log, so a change to your server's settings is never silent.
-
 ## Using it with an AI Agent
 
 The free-text fields default to `$fromAI(...)`, so an agent can fill them in with
@@ -158,18 +160,10 @@ certificate and reference.
 On the trigger:
 
 - **Include Event Name** — add the event name to each item as `event`.
-- **Reconnect Automatically** — reopen a dropped connection.
-- **Topic** — change only to follow a single orchestration run, which publishes
-  to a topic of its own.
 
 ## Compatibility
 
 Tested against n8n 2.36 on Node 24.
-
-The trigger uses Node's built-in WebSocket, which keeps this package free of
-runtime dependencies and needs Node 22 or newer. n8n 2.x requires Node 24, so
-that is already satisfied; on a much older n8n running Node 20 the trigger
-reports what it needs instead of failing obscurely.
 
 ## Development
 
