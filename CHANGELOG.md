@@ -1,4 +1,4 @@
-## [0.5.0] - Unreleased
+## [0.5.0] - 2026-10-27
 
 ### Changed
 - **DataGrout Trigger** receives events over a webhook instead of a WebSocket.

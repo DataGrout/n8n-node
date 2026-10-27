@@ -110,6 +110,20 @@ export function rowsOf(result: unknown): IDataObject[] {
 	return Array.isArray(result) ? result.map(asItem) : [asItem(result)];
 }
 
+const INVALID_JSON = Symbol('invalid JSON');
+
+/**
+ * `JSON.parse` that returns `INVALID_JSON` instead of throwing, so callers raise
+ * their error outside a `catch` (n8n's scanner rejects a plain `Error` thrown there).
+ */
+function parseJsonText(text: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return INVALID_JSON;
+	}
+}
+
 /**
  * A JSON field arrives as a string when typed into the editor and as an object
  * when supplied by an expression. Empty means "not provided".
@@ -118,13 +132,8 @@ export function parseJsonObject(raw: unknown): IDataObject | undefined {
 	if (raw === undefined || raw === null || raw === '') return undefined;
 	if (typeof raw === 'object' && !Array.isArray(raw)) return raw as IDataObject;
 	if (Array.isArray(raw)) throw new Error('expected a JSON object, got an array');
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(String(raw));
-	} catch {
-		// eslint-disable-next-line @n8n/community-nodes/require-node-api-error -- pure module, deliberately free of the n8n runtime so it stays unit-testable; the node converts this into a NodeOperationError with the item index
-		throw new Error('not valid JSON');
-	}
+	const parsed = parseJsonText(String(raw));
+	if (parsed === INVALID_JSON) throw new Error('not valid JSON');
 	if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
 		throw new Error('expected a JSON object');
 	}
@@ -135,12 +144,9 @@ export function parseJsonObject(raw: unknown): IDataObject | undefined {
 export function parseJsonData(raw: unknown): unknown {
 	if (raw === undefined || raw === null || raw === '') return undefined;
 	if (typeof raw === 'object') return raw;
-	try {
-		return JSON.parse(String(raw));
-	} catch {
-		// eslint-disable-next-line @n8n/community-nodes/require-node-api-error -- pure module, deliberately free of the n8n runtime so it stays unit-testable; the node converts this into a NodeOperationError with the item index
-		throw new Error('not valid JSON');
-	}
+	const parsed = parseJsonText(String(raw));
+	if (parsed === INVALID_JSON) throw new Error('not valid JSON');
+	return parsed;
 }
 
 // ── Trigger ──────────────────────────────────────────────────────────

@@ -98,7 +98,7 @@ event you did not select is acknowledged and dropped.
 
 DataGrout must be able to reach n8n over HTTPS at a public address. It refuses
 plain HTTP and any `localhost` or private-network URL, so a self-hosted instance
-needs a public `WEBHOOK_URL`.
+needs a public `N8N_WEBHOOK_URL` (`WEBHOOK_URL` on older n8n).
 
 Press **Listen for test event** in the editor, then make something happen in
 DataGrout — a run finishing, a task failing — and the event lands in the editor
@@ -163,7 +163,7 @@ On the trigger:
 
 ## Compatibility
 
-Tested against n8n 2.36 on Node 24.
+Tested against n8n 2.29 and 2.45.
 
 ## Development
 
