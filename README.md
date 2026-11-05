@@ -152,10 +152,10 @@ question. Replace a field with a fixed value to pin it.
 - **Wait for Result** — DataGrout moves slow work to the background; the node
   waits this long for the finished result. Set 0 to return immediately with the
   task to follow.
-
-On Transform, **Split Rows Into Items** (on by default) outputs one item per row
-of the result. Turn it off to get the whole response as one item, with its
-certificate and reference.
+- **Split Rows Into Items** (Transform; on by default) — one item per row of the
+  result. Turn it off to get the whole response as one item, with its
+  certificate and reference.
+- **Inputs** (Run) — the values the skill expects, as a JSON object.
 
 On the trigger:
 

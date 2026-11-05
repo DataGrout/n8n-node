@@ -29,7 +29,7 @@ export class DataGrout implements INodeType {
 		usableAsTool: true,
 		codex: {
 			categories: ['AI', 'Data & Storage'],
-			alias: ['DataGrout', 'ask', 'verified', 'business data'],
+			alias: ['DataGrout', 'Data Grout'],
 			resources: { primaryDocumentation: [{ url: 'https://library.datagrout.ai/' }] },
 		},
 		inputs: [NodeConnectionTypes.Main],
@@ -161,15 +161,6 @@ export class DataGrout implements INodeType {
 				displayOptions: { show: { resource: ['data'], inputMode: ['cacheRef'] } },
 				description: 'The reference returned by an earlier DataGrout step',
 			},
-			{
-				displayName: 'Split Rows Into Items',
-				name: 'splitRows',
-				type: 'boolean',
-				default: true,
-				displayOptions: { show: { resource: ['data'] } },
-				description:
-					'Whether to output one item per row of the result. Turn off to get the whole response as one item, with its certificate and reference.',
-			},
 
 			// ── Memory ──────────────────────────────────────────────────
 			{
@@ -253,14 +244,6 @@ export class DataGrout implements INodeType {
 				description:
 					'A saved skill\'s ID (skill_…), or the Skill ID an earlier Ask returned. A saved skill does not expire.',
 			},
-			{
-				displayName: 'Inputs',
-				name: 'skillInputs',
-				type: 'json',
-				default: '',
-				displayOptions: { show: { resource: ['skill'] } },
-				description: 'Values the skill expects, as a JSON object',
-			},
 
 			// ── Shared options ──────────────────────────────────────────
 			{
@@ -270,6 +253,23 @@ export class DataGrout implements INodeType {
 				placeholder: 'Add option',
 				default: {},
 				options: [
+					{
+						displayName: 'Inputs',
+						name: 'skillInputs',
+						type: 'json',
+						default: '',
+						displayOptions: { show: { '/resource': ['skill'] } },
+						description: 'Values the skill expects, as a JSON object',
+					},
+					{
+						displayName: 'Split Rows Into Items',
+						name: 'splitRows',
+						type: 'boolean',
+						default: true,
+						displayOptions: { show: { '/resource': ['data'] } },
+						description:
+							'Whether to output one item per row of the result. Turn off to get the whole response as one item, with its certificate and reference.',
+					},
 					{
 						displayName: 'Wait for Result (Ms)',
 						name: 'waitForResult',
@@ -323,7 +323,7 @@ export class DataGrout implements INodeType {
 					}
 
 					const transform = await call(this, 'POST', '/transforms', body, i, waitMs);
-					const split = this.getNodeParameter('splitRows', i, true) as boolean;
+					const split = (options.splitRows as boolean) ?? true;
 
 					if (split && transform.status !== 'running') {
 						rowsOf(transform.result).forEach(emit);
@@ -343,7 +343,7 @@ export class DataGrout implements INodeType {
 				} else if (resource === 'skill') {
 					let inputs: IDataObject | undefined;
 					try {
-						inputs = parseJsonObject(this.getNodeParameter('skillInputs', i, ''));
+						inputs = parseJsonObject(options.skillInputs ?? '');
 					} catch (e) {
 						throw new NodeOperationError(this.getNode(), `Inputs: ${(e as Error).message}`, {
 							itemIndex: i,

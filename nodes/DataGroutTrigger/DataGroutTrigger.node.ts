@@ -30,6 +30,20 @@ function forget(registration: IDataObject): void {
 	delete registration.webhookSecret;
 }
 
+/** Remove a subscription from DataGrout. A failure is logged with the id, so it can be cleaned up by hand. */
+async function removeWebhook(ctx: IHookFunctions, id: string): Promise<boolean> {
+	try {
+		const { status, body } = await hookRequest(ctx, 'DELETE', apiPath('webhooks', id));
+		if (status >= 400 && status !== 404) throw apiError(ctx, status, body);
+		return true;
+	} catch (error) {
+		ctx.logger.warn(
+			`[DataGrout Trigger] could not remove webhook ${id}: ${(error as Error).message}`,
+		);
+		return false;
+	}
+}
+
 // A trigger starts workflows and is never called by an agent. The property's
 // type only accepts `true`, so it is omitted rather than set to false.
 // eslint-disable-next-line @n8n/community-nodes/node-usable-as-tool
@@ -46,7 +60,7 @@ export class DataGroutTrigger implements INodeType {
 		defaults: { name: 'DataGrout Trigger' },
 		codex: {
 			categories: ['AI', 'Data & Storage'],
-			alias: ['DataGrout', 'trigger', 'events', 'webhook'],
+			alias: ['DataGrout', 'Data Grout'],
 			resources: { primaryDocumentation: [{ url: 'https://library.datagrout.ai/' }] },
 		},
 		inputs: [],
@@ -154,10 +168,7 @@ export class DataGroutTrigger implements INodeType {
 				// Registered for another URL. In the editor that is the production
 				// subscription of an active workflow, which must stay; otherwise n8n's
 				// own URL changed, and the old subscription would only collect failures.
-				if (this.getMode() !== 'manual') {
-					await hookRequest(this, 'DELETE', apiPath('webhooks', id)).catch(() => undefined);
-					forget(registration);
-				}
+				if (this.getMode() !== 'manual' && (await removeWebhook(this, id))) forget(registration);
 				return false;
 			},
 
@@ -199,18 +210,8 @@ export class DataGroutTrigger implements INodeType {
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const registration = this.getWorkflowStaticData('node');
 				const id = registration.webhookId;
-				if (typeof id === 'string' && id) {
-					try {
-						const { status, body } = await hookRequest(this, 'DELETE', apiPath('webhooks', id));
-						if (status >= 400 && status !== 404) throw apiError(this, status, body);
-					} catch (error) {
-						// Kept, so the next deactivation can try again.
-						this.logger.warn(
-							`[DataGrout Trigger] could not remove webhook ${id}: ${(error as Error).message}`,
-						);
-						return false;
-					}
-				}
+				// Kept on failure, so the next deactivation can try again.
+				if (typeof id === 'string' && id && !(await removeWebhook(this, id))) return false;
 				forget(registration);
 				return true;
 			},
