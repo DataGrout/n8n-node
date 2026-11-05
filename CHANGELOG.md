@@ -1,3 +1,18 @@
+## [0.6.0] - 2026-11-05
+
+Changes requested by n8n's verification review.
+
+### Changed
+- **Split Rows Into Items** (Transform) and **Inputs** (Run skill) moved from
+  the main form into **Options**, where each appears only for its operation.
+  A workflow that had turned splitting off, or supplied skill inputs, needs
+  them set again under Options.
+- The trigger now logs a warning naming the webhook id when it cannot remove a
+  subscription registered for an earlier URL, instead of dropping the error
+  silently, and keeps that registration so a later activation can retry.
+- Search aliases are limited to DataGrout's own name; generic terms such as
+  "webhook" or "ask" no longer surface the nodes.
+
 ## [0.5.0] - 2026-10-27
 
 ### Changed
