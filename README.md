@@ -124,9 +124,7 @@ To use the node on an AI Agent's Tool connector on a self-hosted instance, set
 
 ## Credentials
 
-Choose either on the node's **Authentication** field.
-
-**DataGrout API** (simplest)
+Create a **DataGrout API** credential and select it on each DataGrout node.
 
 | Field | Where it comes from |
 |---|---|
@@ -134,11 +132,7 @@ Choose either on the node's **Authentication** field.
 | Server ID | Your DataGrout server UUID |
 | Gateway Base URL | Leave as-is unless you self-host the gateway |
 
-**DataGrout OAuth2 API** — for instances that prefer an OAuth flow. Create the
-credential, click **Connect my account**, and there is nothing to fill in: the
-token itself names the server it was granted.
-
-Testing a credential only reads — it fetches the server's name, changes nothing
+Testing the credential only reads — it fetches the server's name, changes nothing
 and costs nothing.
 
 ## Using it with an AI Agent

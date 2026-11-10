@@ -3,7 +3,6 @@
 	"nodes": [
 		{
 			"parameters": {
-				"authentication": "apiToken",
 				"events": ["task.completed"],
 				"options": {}
 			},
@@ -15,7 +14,6 @@
 		},
 		{
 			"parameters": {
-				"authentication": "apiToken",
 				"resource": "data",
 				"operation": "transform",
 				"goal": "summarise these rows by the most useful grouping",

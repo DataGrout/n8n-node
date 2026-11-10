@@ -1,6 +1,6 @@
 {
     "name": "@datagrout/n8n-nodes-datagrout",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "description": "Ask questions of your connected business data from n8n workflows and AI Agents, and get verified answers",
     "license": "MIT",
     "homepage": "https://github.com/DataGrout/n8n-node",
@@ -34,8 +34,7 @@
         "n8nNodesApiVersion": 1,
         "strict": true,
         "credentials": [
-            "dist/credentials/DataGroutApi.credentials.js",
-            "dist/credentials/DataGroutOAuth2Api.credentials.js"
+            "dist/credentials/DataGroutApi.credentials.js"
         ],
         "nodes": [
             "dist/nodes/DataGrout/DataGrout.node.js",

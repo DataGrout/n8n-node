@@ -50,7 +50,6 @@
     },
     {
       "parameters": {
-        "authentication": "apiToken",
         "resource": "answer",
         "operation": "ask"
       },

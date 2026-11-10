@@ -9,31 +9,23 @@ import type { IDataObject } from 'n8n-workflow';
 
 export const DEFAULT_GATEWAY = 'https://gateway.datagrout.ai';
 
-/**
- * The gateway's origin from either credential: the token credential stores a
- * base URL, the OAuth2 credential the `/connect` URL it authorises against.
- */
+/** The gateway's origin from the credential's base URL, or the hosted gateway. */
 export function gatewayOrigin(credentials: IDataObject): string {
-	for (const candidate of [credentials.baseUrl, credentials.serverUrl]) {
-		if (typeof candidate !== 'string' || !candidate.trim()) continue;
+	const base = credentials.baseUrl;
+	if (typeof base === 'string' && base.trim()) {
 		try {
-			return new URL(candidate.trim()).origin;
+			return new URL(base.trim()).origin;
 		} catch {
-			// not a URL; try the next
+			// not a URL; use the hosted gateway
 		}
 	}
 	return DEFAULT_GATEWAY;
 }
 
-/**
- * Where the API lives for a credential. An access token belongs to one server,
- * which the path names. An OAuth token already names the server it was
- * granted, so its requests use the server-less form and the gateway resolves
- * the server from the token.
- */
+/** Where the REST API of the server the credential names lives. */
 export function apiBase(origin: string, serverId: unknown): string {
 	const id = typeof serverId === 'string' ? serverId.trim() : '';
-	return id ? `${origin}/api/v1/servers/${encodeURIComponent(id)}` : `${origin}/api/v1`;
+	return `${origin}/api/v1/servers/${encodeURIComponent(id)}`;
 }
 
 /** DataGrout holds a request for at most this long when asked to wait. */

@@ -203,10 +203,6 @@ describe('gatewayOrigin', () => {
 		assert.equal(gatewayOrigin({ baseUrl: 'https://gateway.datagrout.ai/' }), 'https://gateway.datagrout.ai');
 	});
 
-	it("reads the OAuth2 credential's /connect URL", () => {
-		assert.equal(gatewayOrigin({ serverUrl: 'https://gateway.datagrout.ai/connect' }), 'https://gateway.datagrout.ai');
-	});
-
 	it('defaults to the hosted gateway', () => {
 		assert.equal(gatewayOrigin({}), 'https://gateway.datagrout.ai');
 		assert.equal(gatewayOrigin({ baseUrl: 'not a url' }), 'https://gateway.datagrout.ai');
@@ -219,12 +215,6 @@ describe('apiBase', () => {
 			apiBase('https://gateway.datagrout.ai', '5c3e9f10-7b2a-4d8e-9a61-2f0c4b7d8e31'),
 			'https://gateway.datagrout.ai/api/v1/servers/5c3e9f10-7b2a-4d8e-9a61-2f0c4b7d8e31',
 		);
-	});
-
-	// An OAuth token already names its server; the gateway resolves it.
-	it('uses the server-less form when it does not', () => {
-		assert.equal(apiBase('https://gateway.datagrout.ai', undefined), 'https://gateway.datagrout.ai/api/v1');
-		assert.equal(apiBase('https://gateway.datagrout.ai', '  '), 'https://gateway.datagrout.ai/api/v1');
 	});
 
 	it('encodes the id', () => {

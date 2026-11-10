@@ -1,3 +1,17 @@
+## [0.7.0] - 2026-11-10
+
+Requested by n8n's verification review: Dynamic Client Registration is not yet
+generally available to community nodes, so the OAuth2 credential has to go
+until it is.
+
+### Removed
+- The **DataGrout OAuth2 API** credential and the **Authentication** selector
+  on both nodes. The **DataGrout API** credential (API token, server ID,
+  gateway URL) is the only one, and the nodes use it without being asked.
+  A workflow that used OAuth2 needs a DataGrout API credential selected in its
+  place. The OAuth2 credential returns once Dynamic Client Registration is
+  generally available for community nodes.
+
 ## [0.6.0] - 2026-11-05
 
 Changes requested by n8n's verification review.

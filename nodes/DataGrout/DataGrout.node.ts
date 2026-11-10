@@ -34,30 +34,8 @@ export class DataGrout implements INodeType {
 		},
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
-		credentials: [
-			{
-				name: 'dataGroutApi',
-				required: true,
-				displayOptions: { show: { authentication: ['apiToken'] } },
-			},
-			{
-				name: 'dataGroutOAuth2Api',
-				required: true,
-				displayOptions: { show: { authentication: ['oAuth2'] } },
-			},
-		],
+		credentials: [{ name: 'dataGroutApi', required: true }],
 		properties: [
-			{
-				displayName: 'Authentication',
-				name: 'authentication',
-				type: 'options',
-				noDataExpression: true,
-				options: [
-					{ name: 'API Token', value: 'apiToken' },
-					{ name: 'OAuth2', value: 'oAuth2' },
-				],
-				default: 'apiToken',
-			},
 			{
 				displayName: 'Resource',
 				name: 'resource',

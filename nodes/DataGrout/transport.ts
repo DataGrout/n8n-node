@@ -44,15 +44,12 @@ interface Connection {
 	base: string;
 }
 
-function credentialFor(authentication: unknown): string {
-	return authentication === 'oAuth2' ? 'dataGroutOAuth2Api' : 'dataGroutApi';
-}
+const CREDENTIAL = 'dataGroutApi';
 
 async function connection(ctx: IExecuteFunctions, itemIndex: number): Promise<Connection> {
-	const credential = credentialFor(ctx.getNodeParameter('authentication', itemIndex, 'apiToken'));
-	const credentials = await ctx.getCredentials(credential, itemIndex);
+	const credentials = await ctx.getCredentials(CREDENTIAL, itemIndex);
 	const origin = gatewayOrigin(credentials);
-	return { credential, origin, base: apiBase(origin, credentials.serverId) };
+	return { credential: CREDENTIAL, origin, base: apiBase(origin, credentials.serverId) };
 }
 
 /** The error to raise for a response the API refused, in the API's own words. */
@@ -108,10 +105,9 @@ export async function hookRequest(
 	path: string,
 	body?: IDataObject,
 ): Promise<Response> {
-	const credential = credentialFor(ctx.getNodeParameter('authentication', 'apiToken'));
-	const credentials = await ctx.getCredentials(credential);
+	const credentials = await ctx.getCredentials(CREDENTIAL);
 	const base = apiBase(gatewayOrigin(credentials), credentials.serverId);
-	return await request(ctx, credential, { method, url: base + path, body });
+	return await request(ctx, CREDENTIAL, { method, url: base + path, body });
 }
 
 /**
